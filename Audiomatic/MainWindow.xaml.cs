@@ -29,9 +29,14 @@ public sealed partial class MainWindow : Window
     private bool _sortAscending = true;
 
     // Playlist navigation
-    private enum ViewMode { Library, PlaylistList, PlaylistDetail, Queue }
+    private enum ViewMode { Library, PlaylistList, PlaylistDetail, Queue, Visualizer }
     private ViewMode _viewMode = ViewMode.Library;
     private PlaylistInfo? _currentPlaylist;
+
+    // Visualizer
+    private readonly SpectrumAnalyzer _spectrum = new();
+    private DispatcherTimer? _spectrumTimer;
+    private int _vizFps = 30;
 
     // Collapse animation
     private bool _isCollapsed;
@@ -178,6 +183,8 @@ public sealed partial class MainWindow : Window
             UpdateRepeatIcon();
         }
 
+        _vizFps = settings.VisualizerFps;
+
         // Subclass window for hotkey/tray messages
         _wndProcDelegate = new WndProcDelegate(WndProc);
         _oldWndProc = SetWindowLongPtr(_hwnd, GWLP_WNDPROC,
@@ -207,9 +214,12 @@ public sealed partial class MainWindow : Window
                 RepeatMode = _queue.Repeat.ToString(),
                 SortBy = _sortBy,
                 SortAscending = _sortAscending,
+                VisualizerFps = _vizFps,
                 WindowX = pos.X,
                 WindowY = pos.Y
             });
+            _spectrumTimer?.Stop();
+            _spectrum.Dispose();
             _player.Dispose();
         };
     }
@@ -235,6 +245,9 @@ public sealed partial class MainWindow : Window
             BuildQueueView();
             return;
         }
+
+        if (_viewMode == ViewMode.Visualizer)
+            return;
 
         List<TrackInfo> source = _viewMode == ViewMode.PlaylistDetail && _currentPlaylist != null
             ? LibraryManager.GetPlaylistTracks(_currentPlaylist.Id)
@@ -496,6 +509,7 @@ public sealed partial class MainWindow : Window
         TimelineSlider.Value = pos.TotalSeconds;
         PositionText.Text = FormatTime(pos);
         _isSeeking = false;
+
     }
 
     private void UpdateNowPlaying(TrackInfo track)
@@ -506,7 +520,9 @@ public sealed partial class MainWindow : Window
         PlayPauseIcon.Glyph = "\uE769"; // Pause icon
         LoadAlbumArt(track.Path);
         // Re-highlight current track in the appropriate view
-        if (_viewMode == ViewMode.Queue)
+        if (_viewMode == ViewMode.Visualizer)
+            PrepareSpectrumForCurrentTrack();
+        else if (_viewMode == ViewMode.Queue)
             BuildQueueView();
         else if (_viewMode != ViewMode.PlaylistList)
             RebuildTrackList();
@@ -795,6 +811,7 @@ public sealed partial class MainWindow : Window
         _viewMode = ViewMode.Library;
         _currentPlaylist = null;
         UpdateNavigation();
+        UpdateSpectrumTimer();
         ApplyFilterAndSort();
     }
 
@@ -803,6 +820,7 @@ public sealed partial class MainWindow : Window
         _viewMode = ViewMode.PlaylistList;
         _currentPlaylist = null;
         UpdateNavigation();
+        UpdateSpectrumTimer();
         LoadPlaylistList();
     }
 
@@ -857,9 +875,16 @@ public sealed partial class MainWindow : Window
         SetTab(NavLibraryText, _viewMode == ViewMode.Library);
         SetTab(NavPlaylistsText, _viewMode == ViewMode.PlaylistList);
         SetTab(NavQueueText, _viewMode == ViewMode.Queue);
+        SetTab(NavVisualizerText, _viewMode == ViewMode.Visualizer);
 
         // Show/hide search & sort
         SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail)
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        // Show/hide visualizer vs track list
+        WaveformContainer.Visibility = _viewMode == ViewMode.Visualizer
+            ? Visibility.Visible : Visibility.Collapsed;
+        TrackListView.Visibility = _viewMode != ViewMode.Visualizer
             ? Visibility.Visible : Visibility.Collapsed;
 
         // Playlist detail name
@@ -1118,6 +1143,7 @@ public sealed partial class MainWindow : Window
         _viewMode = ViewMode.Queue;
         _currentPlaylist = null;
         UpdateNavigation();
+        UpdateSpectrumTimer();
         BuildQueueView();
     }
 
@@ -1126,6 +1152,117 @@ public sealed partial class MainWindow : Window
         _queue.Clear();
         BuildQueueView();
     }
+
+    // -- Visualizer -----------------------------------------------
+
+    private void NavVisualizer_Click(object sender, RoutedEventArgs e)
+    {
+        _viewMode = ViewMode.Visualizer;
+        _currentPlaylist = null;
+        UpdateNavigation();
+        UpdateSpectrumTimer();
+    }
+
+    private void UpdateSpectrumTimer()
+    {
+        bool needsTimer = _viewMode == ViewMode.Visualizer;
+        if (needsTimer && _spectrumTimer == null)
+        {
+            PrepareSpectrumForCurrentTrack();
+            int ms = _vizFps >= 60 ? 16 : 33;
+            _spectrumTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
+            _spectrumTimer.Tick += (_, _) =>
+            {
+                if (_viewMode == ViewMode.Visualizer)
+                    DrawVisualization();
+            };
+            _spectrumTimer.Start();
+        }
+        else if (!needsTimer && _spectrumTimer != null)
+        {
+            _spectrumTimer.Stop();
+            _spectrumTimer = null;
+        }
+    }
+
+    public void ApplyVisualizerFps(int fps)
+    {
+        _vizFps = fps;
+        if (_spectrumTimer != null)
+        {
+            _spectrumTimer.Stop();
+            _spectrumTimer = null;
+            UpdateSpectrumTimer();
+        }
+    }
+
+    private async void PrepareSpectrumForCurrentTrack()
+    {
+        var track = _player.CurrentTrack;
+        if (track != null)
+            await _spectrum.PrepareAsync(track.Path);
+    }
+
+    private void DrawVisualization()
+    {
+        WaveformCanvas.Children.Clear();
+        var w = WaveformContainer.ActualWidth;
+        var h = WaveformContainer.ActualHeight;
+        if (w <= 0 || h <= 0) return;
+
+        if (_player.CurrentTrack == null)
+        {
+            var tb = new TextBlock
+            {
+                Text = "No track playing", FontSize = 13,
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+            };
+            Canvas.SetLeft(tb, w / 2 - 50);
+            Canvas.SetTop(tb, h / 2 - 10);
+            WaveformCanvas.Children.Add(tb);
+            return;
+        }
+
+        double barW = 4, gap = 2, step = barW + gap;
+        int bandCount = Math.Max(1, (int)(w / step));
+        double ox = (w - bandCount * step) / 2;
+        double centerY = h / 2, halfMax = h * 0.44;
+
+        var bands = _spectrum.GetSpectrum(_player.Position, bandCount);
+        var accent = ThemeHelper.Brush("AccentFillColorDefaultBrush");
+        var accentDim = ThemeHelper.Brush("AccentFillColorSecondaryBrush");
+
+        for (int i = 0; i < bands.Length && i < bandCount; i++)
+        {
+            double bh = 2 + bands[i] * (halfMax - 2);
+            double x = ox + i * step;
+
+            var upper = new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = barW, Height = bh,
+                RadiusX = 2, RadiusY = 2,
+                Fill = accent
+            };
+            Canvas.SetLeft(upper, x);
+            Canvas.SetTop(upper, centerY - bh);
+            WaveformCanvas.Children.Add(upper);
+
+            var lower = new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = barW, Height = bh * 0.6,
+                RadiusX = 2, RadiusY = 2,
+                Fill = accentDim,
+                Opacity = 0.4
+            };
+            Canvas.SetLeft(lower, x);
+            Canvas.SetTop(lower, centerY + 2);
+            WaveformCanvas.Children.Add(lower);
+        }
+    }
+
+    private void WaveformContainer_SizeChanged(object sender, SizeChangedEventArgs e) { }
+
+    private void WaveformCanvas_PointerPressed(object sender, PointerRoutedEventArgs e) { }
 
     private void BuildQueueView()
     {
@@ -1495,6 +1632,27 @@ public sealed partial class MainWindow : Window
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
+        // Visualizer FPS
+        panel.Children.Add(ActionPanel.CreateSectionHeader("Visualizer"));
+
+        void AddFpsOption(int fps, string label)
+        {
+            var isActive = _vizFps == fps;
+            panel.Children.Add(ActionPanel.CreateButton(
+                isActive ? "\uE73E" : "\uE8D7", label, [], () =>
+            {
+                ApplyVisualizerFps(fps);
+                var s = SettingsManager.Load();
+                SettingsManager.Save(s with { VisualizerFps = fps });
+                flyout.Hide();
+            }, isActive: isActive));
+        }
+
+        AddFpsOption(30, "30 FPS");
+        AddFpsOption(60, "60 FPS");
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
         // Toggle actions
         panel.Children.Add(ActionPanel.CreateButton("\uE73F",
             _isCollapsed ? "Expand" : "Compact Mode",
@@ -1602,7 +1760,10 @@ public sealed partial class MainWindow : Window
             NavRow.Visibility = Visibility.Visible;
             SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail)
                 ? Visibility.Visible : Visibility.Collapsed;
-            TrackListView.Visibility = Visibility.Visible;
+            TrackListView.Visibility = _viewMode != ViewMode.Visualizer
+                ? Visibility.Visible : Visibility.Collapsed;
+            WaveformContainer.Visibility = _viewMode == ViewMode.Visualizer
+                ? Visibility.Visible : Visibility.Collapsed;
             BottomBar.Visibility = Visibility.Visible;
         }
 

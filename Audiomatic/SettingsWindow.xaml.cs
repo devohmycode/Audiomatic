@@ -14,16 +14,19 @@ public sealed partial class SettingsWindow : Window
     private readonly Action<BackdropSettings>? _onBackdropChanged;
     private readonly Action<string>? _onThemeChanged;
     private readonly Action? _onLibraryChanged;
+    private readonly Action<int>? _onFpsChanged;
     private CancellationTokenSource? _scanCts;
 
     public SettingsWindow(SystemBackdrop? backdrop,
         Action<BackdropSettings>? onBackdropChanged = null,
         Action<string>? onThemeChanged = null,
-        Action? onLibraryChanged = null)
+        Action? onLibraryChanged = null,
+        Action<int>? onFpsChanged = null)
     {
         _onBackdropChanged = onBackdropChanged;
         _onThemeChanged = onThemeChanged;
         _onLibraryChanged = onLibraryChanged;
+        _onFpsChanged = onFpsChanged;
 
         this.InitializeComponent();
         ExtendsContentIntoTitleBar = true;
@@ -64,6 +67,10 @@ public sealed partial class SettingsWindow : Window
             case "dark": RadioThemeDark.IsChecked = true; break;
             default: RadioThemeSystem.IsChecked = true; break;
         }
+
+        var fps = SettingsManager.Load().VisualizerFps;
+        if (fps >= 60) RadioFps60.IsChecked = true;
+        else RadioFps30.IsChecked = true;
     }
 
     private void LoadFolders()
@@ -266,6 +273,16 @@ public sealed partial class SettingsWindow : Window
             "dark" => ElementTheme.Dark,
             _ => ElementTheme.Default
         };
+    }
+
+    private void FpsRadio_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        if (FpsRadio.SelectedItem is not RadioButton rb || rb.Tag is not string tag) return;
+        int fps = tag == "60" ? 60 : 30;
+        var current = SettingsManager.Load();
+        SettingsManager.Save(current with { VisualizerFps = fps });
+        _onFpsChanged?.Invoke(fps);
     }
 
     // ── Tab navigation ───────────────────────────────────────
