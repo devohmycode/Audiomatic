@@ -2220,6 +2220,16 @@ public sealed partial class MainWindow : Window
         }
         else if (_collapseState == CollapseState.Mini)
         {
+            // Hide everything immediately before animation
+            CustomTitleBar.Visibility = Visibility.Collapsed;
+            NowPlayingCard.Visibility = Visibility.Collapsed;
+            VolumeRow.Visibility = Visibility.Collapsed;
+            NavRow.Visibility = Visibility.Collapsed;
+            SearchSortRow.Visibility = Visibility.Collapsed;
+            TrackListView.Visibility = Visibility.Collapsed;
+            WaveformContainer.Visibility = Visibility.Collapsed;
+            BottomBar.Visibility = Visibility.Collapsed;
+            MiniPlayerBar.Visibility = Visibility.Visible;
             UpdateMiniPlayer(_queue.CurrentTrack);
             MiniPlayPauseIcon.Glyph = _player.IsPlaying ? "\uE769" : "\uE768";
         }
