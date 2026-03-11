@@ -38,6 +38,8 @@ public sealed partial class MainWindow : Window
     private readonly SpectrumAnalyzer _spectrum = new();
     private DispatcherTimer? _spectrumTimer;
     private int _vizFps = 30;
+    private int _vizBandCount;  // tracks current bar count for reuse
+    private TextBlock? _vizNoTrackText;
 
     // View transition animation
     private bool _isViewTransitioning;
@@ -171,11 +173,16 @@ public sealed partial class MainWindow : Window
         LoadTracks();
         UpdateNavigation();
 
-        // Restore queue state
+        // Restore queue state (display info only, not playing yet)
         _queue.LoadState(_allTracks);
         if (_queue.CurrentTrack != null)
         {
-            UpdateNowPlaying(_queue.CurrentTrack);
+            var t = _queue.CurrentTrack;
+            TrackTitle.Text = t.Title;
+            TrackArtist.Text = t.Artist;
+            TrackAlbum.Text = t.Album;
+            LoadAlbumArt(t.Path);
+            UpdateMiniPlayer(t);
         }
 
         // Restore shuffle/repeat
@@ -565,16 +572,20 @@ public sealed partial class MainWindow : Window
 
     private async void LoadAlbumArt(string filePath)
     {
-        // 1. Try embedded tag artwork
+        byte[]? embeddedArtData = null;
+        string? coverFilePath = null;
+
+        // 1. Try embedded tag artwork (single TagLib read — also used for SMTC)
         try
         {
             using var tagFile = TagLib.File.Create(filePath);
             if (tagFile.Tag.Pictures.Length > 0)
             {
-                var pic = tagFile.Tag.Pictures[0];
+                embeddedArtData = tagFile.Tag.Pictures[0].Data.Data;
+
                 using var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
                 using var writer = new Windows.Storage.Streams.DataWriter(stream.GetOutputStreamAt(0));
-                writer.WriteBytes(pic.Data.Data);
+                writer.WriteBytes(embeddedArtData);
                 await writer.StoreAsync();
                 stream.Seek(0);
 
@@ -583,6 +594,8 @@ public sealed partial class MainWindow : Window
                 AlbumArtImage.Source = bitmap;
                 AlbumArtPlaceholder.Visibility = Visibility.Collapsed;
                 AlbumArtImage.Visibility = Visibility.Visible;
+
+                _player.UpdateSmtcArtwork(embeddedArtData, null);
                 return;
             }
         }
@@ -594,14 +607,16 @@ public sealed partial class MainWindow : Window
             var folder = System.IO.Path.GetDirectoryName(filePath);
             if (folder != null)
             {
-                var coverPath = FindCoverFile(folder);
-                if (coverPath != null)
+                coverFilePath = FindCoverFile(folder);
+                if (coverFilePath != null)
                 {
                     var bitmap = new BitmapImage();
-                    bitmap.UriSource = new Uri(coverPath);
+                    bitmap.UriSource = new Uri(coverFilePath);
                     AlbumArtImage.Source = bitmap;
                     AlbumArtPlaceholder.Visibility = Visibility.Collapsed;
                     AlbumArtImage.Visibility = Visibility.Visible;
+
+                    _player.UpdateSmtcArtwork(null, coverFilePath);
                     return;
                 }
             }
@@ -611,6 +626,7 @@ public sealed partial class MainWindow : Window
         AlbumArtImage.Source = null;
         AlbumArtImage.Visibility = Visibility.Collapsed;
         AlbumArtPlaceholder.Visibility = Visibility.Visible;
+        _player.UpdateSmtcArtwork(null, null);
     }
 
     private static string? FindCoverFile(string folder)
@@ -1598,6 +1614,8 @@ public sealed partial class MainWindow : Window
         {
             _spectrumTimer.Stop();
             _spectrumTimer = null;
+            _vizBandCount = 0;
+            _vizNoTrackText = null;
         }
     }
 
@@ -1621,58 +1639,84 @@ public sealed partial class MainWindow : Window
 
     private void DrawVisualization()
     {
-        WaveformCanvas.Children.Clear();
         var w = WaveformContainer.ActualWidth;
         var h = WaveformContainer.ActualHeight;
         if (w <= 0 || h <= 0) return;
 
         if (_player.CurrentTrack == null)
         {
-            var tb = new TextBlock
+            // Show "no track" only if not already shown
+            if (_vizNoTrackText == null)
             {
-                Text = "No track playing", FontSize = 13,
-                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
-            };
-            Canvas.SetLeft(tb, w / 2 - 50);
-            Canvas.SetTop(tb, h / 2 - 10);
-            WaveformCanvas.Children.Add(tb);
+                WaveformCanvas.Children.Clear();
+                _vizBandCount = 0;
+                _vizNoTrackText = new TextBlock
+                {
+                    Text = "No track playing", FontSize = 13,
+                    Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+                };
+                Canvas.SetLeft(_vizNoTrackText, w / 2 - 50);
+                Canvas.SetTop(_vizNoTrackText, h / 2 - 10);
+                WaveformCanvas.Children.Add(_vizNoTrackText);
+            }
             return;
         }
+        _vizNoTrackText = null;
 
         double barW = 4, gap = 2, step = barW + gap;
         int bandCount = Math.Max(1, (int)(w / step));
         double ox = (w - bandCount * step) / 2;
         double centerY = h / 2, halfMax = h * 0.44;
 
-        var bands = _spectrum.GetSpectrum(_player.Position, bandCount);
-        var accent = ThemeHelper.Brush("AccentFillColorDefaultBrush");
-        var accentDim = ThemeHelper.Brush("AccentFillColorSecondaryBrush");
+        // Rebuild bars only when band count changes (window resize)
+        if (bandCount != _vizBandCount)
+        {
+            WaveformCanvas.Children.Clear();
+            _vizBandCount = bandCount;
 
-        for (int i = 0; i < bands.Length && i < bandCount; i++)
+            var accent = ThemeHelper.Brush("AccentFillColorDefaultBrush");
+            var accentDim = ThemeHelper.Brush("AccentFillColorSecondaryBrush");
+
+            for (int i = 0; i < bandCount; i++)
+            {
+                double x = ox + i * step;
+
+                var upper = new Microsoft.UI.Xaml.Shapes.Rectangle
+                {
+                    Width = barW, Height = 2,
+                    RadiusX = 2, RadiusY = 2,
+                    Fill = accent
+                };
+                Canvas.SetLeft(upper, x);
+                Canvas.SetTop(upper, centerY - 2);
+                WaveformCanvas.Children.Add(upper);
+
+                var lower = new Microsoft.UI.Xaml.Shapes.Rectangle
+                {
+                    Width = barW, Height = 2,
+                    RadiusX = 2, RadiusY = 2,
+                    Fill = accentDim,
+                    Opacity = 0.4
+                };
+                Canvas.SetLeft(lower, x);
+                Canvas.SetTop(lower, centerY + 2);
+                WaveformCanvas.Children.Add(lower);
+            }
+        }
+
+        // Update existing bar heights/positions — no allocation
+        var bands = _spectrum.GetSpectrum(_player.Position, bandCount);
+
+        for (int i = 0; i < bandCount && i < bands.Length; i++)
         {
             double bh = 2 + bands[i] * (halfMax - 2);
-            double x = ox + i * step;
 
-            var upper = new Microsoft.UI.Xaml.Shapes.Rectangle
-            {
-                Width = barW, Height = bh,
-                RadiusX = 2, RadiusY = 2,
-                Fill = accent
-            };
-            Canvas.SetLeft(upper, x);
+            var upper = (Microsoft.UI.Xaml.Shapes.Rectangle)WaveformCanvas.Children[i * 2];
+            upper.Height = bh;
             Canvas.SetTop(upper, centerY - bh);
-            WaveformCanvas.Children.Add(upper);
 
-            var lower = new Microsoft.UI.Xaml.Shapes.Rectangle
-            {
-                Width = barW, Height = bh * 0.6,
-                RadiusX = 2, RadiusY = 2,
-                Fill = accentDim,
-                Opacity = 0.4
-            };
-            Canvas.SetLeft(lower, x);
-            Canvas.SetTop(lower, centerY + 2);
-            WaveformCanvas.Children.Add(lower);
+            var lower = (Microsoft.UI.Xaml.Shapes.Rectangle)WaveformCanvas.Children[i * 2 + 1];
+            lower.Height = bh * 0.6;
         }
     }
 
@@ -2416,6 +2460,7 @@ public sealed partial class MainWindow : Window
         {
             ShowWindow(_hwnd, 0); // Hide to tray
             _isVisible = false;
+            SuspendTimers();
         }
     }
 
@@ -2456,13 +2501,28 @@ public sealed partial class MainWindow : Window
         {
             ShowWindow(_hwnd, 0); // SW_HIDE
             _isVisible = false;
+            SuspendTimers();
         }
         else
         {
             ShowWindow(_hwnd, 5); // SW_SHOW
             SetForegroundWindow(_hwnd);
             _isVisible = true;
+            ResumeTimers();
         }
+    }
+
+    private void SuspendTimers()
+    {
+        _player.SuspendPositionTimer();
+        _spectrumTimer?.Stop();
+    }
+
+    private void ResumeTimers()
+    {
+        _player.ResumePositionTimer();
+        if (_viewMode == ViewMode.Visualizer)
+            _spectrumTimer?.Start();
     }
 
     private void AddTrayIcon()
