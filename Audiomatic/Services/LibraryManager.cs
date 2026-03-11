@@ -390,6 +390,22 @@ public static class LibraryManager
         return ReadTracks(cmd);
     }
 
+    // ── Metadata editing ─────────────────────────────────────
+
+    public static void UpdateTrackMetadata(long trackId, string title, string artist, string album)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        conn.Open();
+        EnablePragmas(conn);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE tracks SET title = @title, artist = @artist, album = @album WHERE id = @id;";
+        cmd.Parameters.AddWithValue("@title", title);
+        cmd.Parameters.AddWithValue("@artist", artist);
+        cmd.Parameters.AddWithValue("@album", album);
+        cmd.Parameters.AddWithValue("@id", trackId);
+        cmd.ExecuteNonQuery();
+    }
+
     // ── Playlist management ──────────────────────────────────
 
     public static long CreatePlaylist(string name)

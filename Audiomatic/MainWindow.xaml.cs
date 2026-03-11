@@ -1144,6 +1144,13 @@ public sealed partial class MainWindow : Window
             }
         }));
 
+        // Edit tags
+        panel.Children.Add(ActionPanel.CreateSeparator());
+        panel.Children.Add(ActionPanel.CreateButton("\uE70F", "Edit Tags", [], () =>
+        {
+            flyout.Content = BuildMetadataEditorContent(flyout, track);
+        }));
+
         // Remove from playlist (playlist detail only)
         if (_viewMode == ViewMode.PlaylistDetail && _currentPlaylist != null)
         {
@@ -1258,6 +1265,286 @@ public sealed partial class MainWindow : Window
             _queue.Clear();
             BuildQueueView();
         }, isDestructive: true));
+
+        return panel;
+    }
+
+    private StackPanel BuildMetadataEditorContent(Flyout flyout, TrackInfo track)
+    {
+        var panel = new StackPanel { Spacing = 6, Padding = new Thickness(4) };
+
+        // Back button + header
+        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var backBtn = new Button
+        {
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(4, 2, 4, 2),
+            MinHeight = 0, MinWidth = 0,
+            Content = new FontIcon { Glyph = "\uE72B", FontSize = 12 }
+        };
+        backBtn.Click += (_, _) =>
+        {
+            flyout.Content = BuildTrackContextContent(flyout, track);
+        };
+        header.Children.Add(backBtn);
+        header.Children.Add(new TextBlock
+        {
+            Text = "Edit Tags",
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        panel.Children.Add(header);
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        // Artwork preview + buttons
+        var artworkGrid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        artworkGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        artworkGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var artPreview = new Image
+        {
+            Width = 64, Height = 64,
+            Stretch = Stretch.UniformToFill
+        };
+        var artPlaceholder = new FontIcon
+        {
+            Glyph = "\uE8D6", FontSize = 24, Width = 64, Height = 64,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush")
+        };
+
+        byte[]? pendingArtwork = null;
+        bool removeArtwork = false;
+
+        // Load current artwork
+        try
+        {
+            using var tagFile = TagLib.File.Create(track.Path);
+            if (tagFile.Tag.Pictures.Length > 0)
+            {
+                var pic = tagFile.Tag.Pictures[0];
+                var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+                var writer = new Windows.Storage.Streams.DataWriter(stream.GetOutputStreamAt(0));
+                writer.WriteBytes(pic.Data.Data);
+                _ = writer.StoreAsync().AsTask().Result;
+                stream.Seek(0);
+                var bitmap = new BitmapImage();
+                bitmap.SetSource(stream);
+                artPreview.Source = bitmap;
+                artPlaceholder.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                artPreview.Visibility = Visibility.Collapsed;
+            }
+        }
+        catch
+        {
+            artPreview.Visibility = Visibility.Collapsed;
+        }
+
+        var artContainer = new Grid
+        {
+            Width = 64, Height = 64, CornerRadius = new CornerRadius(4),
+            Background = ThemeHelper.Brush("CardBackgroundFillColorSecondaryBrush")
+        };
+        artContainer.Children.Add(artPreview);
+        artContainer.Children.Add(artPlaceholder);
+        Grid.SetColumn(artContainer, 0);
+
+        var artButtons = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 0, 0),
+            Spacing = 4
+        };
+
+        var changeArtBtn = new Button
+        {
+            Content = "Change",
+            FontSize = 11,
+            Padding = new Thickness(8, 3, 8, 3),
+            MinHeight = 0
+        };
+        changeArtBtn.Click += async (_, _) =>
+        {
+            var picker = new FileOpenPicker();
+            picker.SuggestedStartLocation = PickerLocationId.PicturesLibrary;
+            picker.FileTypeFilter.Add(".jpg");
+            picker.FileTypeFilter.Add(".jpeg");
+            picker.FileTypeFilter.Add(".png");
+
+            InitializeWithWindow.Initialize(picker, _hwnd);
+
+            var file = await picker.PickSingleFileAsync();
+            if (file == null) return;
+
+            pendingArtwork = await System.IO.File.ReadAllBytesAsync(file.Path);
+            removeArtwork = false;
+
+            var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+            var writer = new Windows.Storage.Streams.DataWriter(stream.GetOutputStreamAt(0));
+            writer.WriteBytes(pendingArtwork);
+            await writer.StoreAsync();
+            stream.Seek(0);
+            var bitmap = new BitmapImage();
+            bitmap.SetSource(stream);
+            artPreview.Source = bitmap;
+            artPreview.Visibility = Visibility.Visible;
+            artPlaceholder.Visibility = Visibility.Collapsed;
+        };
+        artButtons.Children.Add(changeArtBtn);
+
+        var removeArtBtn = new Button
+        {
+            Content = "Remove",
+            FontSize = 11,
+            Padding = new Thickness(8, 3, 8, 3),
+            MinHeight = 0
+        };
+        removeArtBtn.Click += (_, _) =>
+        {
+            removeArtwork = true;
+            pendingArtwork = null;
+            artPreview.Source = null;
+            artPreview.Visibility = Visibility.Collapsed;
+            artPlaceholder.Visibility = Visibility.Visible;
+        };
+        artButtons.Children.Add(removeArtBtn);
+
+        Grid.SetColumn(artButtons, 1);
+        artworkGrid.Children.Add(artContainer);
+        artworkGrid.Children.Add(artButtons);
+        panel.Children.Add(artworkGrid);
+
+        // Text fields
+        var titleBox = new TextBox
+        {
+            Header = "Title",
+            Text = track.Title,
+            FontSize = 12,
+            Padding = new Thickness(8, 5, 8, 5)
+        };
+        panel.Children.Add(titleBox);
+
+        var artistBox = new TextBox
+        {
+            Header = "Artist",
+            Text = track.Artist,
+            FontSize = 12,
+            Padding = new Thickness(8, 5, 8, 5)
+        };
+        panel.Children.Add(artistBox);
+
+        var albumBox = new TextBox
+        {
+            Header = "Album",
+            Text = track.Album,
+            FontSize = 12,
+            Padding = new Thickness(8, 5, 8, 5)
+        };
+        panel.Children.Add(albumBox);
+
+        // Error message area
+        var errorText = new TextBlock
+        {
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 99, 99)),
+            TextWrapping = TextWrapping.Wrap,
+            Visibility = Visibility.Collapsed
+        };
+        panel.Children.Add(errorText);
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        // Save / Cancel buttons
+        var buttonRow = new Grid();
+        buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var saveBtn = new Button
+        {
+            Content = "Save",
+            FontSize = 12,
+            Padding = new Thickness(16, 5, 16, 5),
+            Style = (Style)Application.Current.Resources["AccentButtonStyle"]
+        };
+        saveBtn.Click += (_, _) =>
+        {
+            var newTitle = titleBox.Text.Trim();
+            var newArtist = artistBox.Text.Trim();
+            var newAlbum = albumBox.Text.Trim();
+
+            if (string.IsNullOrEmpty(newTitle))
+                newTitle = Path.GetFileNameWithoutExtension(track.Path);
+
+            // Write tags to file
+            var result = MetadataWriter.WriteTags(track.Path, newTitle, newArtist, newAlbum);
+            if (!result.Success)
+            {
+                errorText.Text = result.Error ?? "Unknown error";
+                errorText.Visibility = Visibility.Visible;
+                return;
+            }
+
+            // Write artwork if changed
+            if (pendingArtwork != null || removeArtwork)
+            {
+                var artResult = MetadataWriter.WriteArtwork(track.Path,
+                    removeArtwork ? null : pendingArtwork);
+                if (!artResult.Success)
+                {
+                    errorText.Text = artResult.Error ?? "Unknown error";
+                    errorText.Visibility = Visibility.Visible;
+                    return;
+                }
+            }
+
+            // Update database
+            LibraryManager.UpdateTrackMetadata(track.Id, newTitle, newArtist, newAlbum);
+
+            // Update in-memory track
+            track.Title = newTitle;
+            track.Artist = newArtist;
+            track.Album = newAlbum;
+
+            // Refresh UI
+            LoadTracks();
+
+            // If this is the currently playing track, update now-playing display
+            if (_queue.CurrentTrack?.Id == track.Id)
+            {
+                _queue.CurrentTrack.Title = newTitle;
+                _queue.CurrentTrack.Artist = newArtist;
+                _queue.CurrentTrack.Album = newAlbum;
+                TrackTitle.Text = newTitle;
+                TrackArtist.Text = newArtist;
+                TrackAlbum.Text = newAlbum;
+                UpdateMiniPlayer(_queue.CurrentTrack);
+
+                if (pendingArtwork != null || removeArtwork)
+                    LoadAlbumArt(track.Path);
+            }
+
+            flyout.Hide();
+        };
+        Grid.SetColumn(saveBtn, 1);
+
+        var cancelBtn = new Button
+        {
+            Content = "Cancel",
+            FontSize = 12,
+            Padding = new Thickness(12, 5, 12, 5)
+        };
+        cancelBtn.Click += (_, _) => flyout.Hide();
+        Grid.SetColumn(cancelBtn, 0);
+
+        buttonRow.Children.Add(cancelBtn);
+        buttonRow.Children.Add(saveBtn);
+        panel.Children.Add(buttonRow);
 
         return panel;
     }
