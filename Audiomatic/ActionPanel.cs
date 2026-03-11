@@ -17,9 +17,9 @@ public static class ActionPanel
         style.Setters.Add(new Setter(FlyoutPresenter.MinWidthProperty, minWidth));
         style.Setters.Add(new Setter(FlyoutPresenter.MaxWidthProperty, maxWidth));
         style.Setters.Add(new Setter(FlyoutPresenter.BackgroundProperty,
-            (Brush)Application.Current.Resources["AcrylicInAppFillColorDefaultBrush"]));
+            ThemeHelper.Brush("AcrylicInAppFillColorDefaultBrush")));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderBrushProperty,
-            (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"]));
+            ThemeHelper.Brush("CardStrokeColorDefaultBrush")));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
         return style;
     }
@@ -29,7 +29,7 @@ public static class ActionPanel
         return new Border
         {
             Height = 1,
-            Background = (Brush)Application.Current.Resources["DividerStrokeColorDefaultBrush"],
+            Background = ThemeHelper.Brush("DividerStrokeColorDefaultBrush"),
             Margin = new Thickness(6, 1, 6, 1)
         };
     }
@@ -40,7 +40,7 @@ public static class ActionPanel
         {
             Text = text,
             FontSize = 11,
-            Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
             Margin = new Thickness(8, 4, 8, 3),
             TextTrimming = TextTrimming.CharacterEllipsis
         };
@@ -70,9 +70,9 @@ public static class ActionPanel
         if (isDestructive)
             foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 99, 99));
         else if (isActive)
-            foreground = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"];
+            foreground = ThemeHelper.Brush("AccentTextFillColorPrimaryBrush");
         else
-            foreground = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+            foreground = ThemeHelper.Brush("TextFillColorPrimaryBrush");
 
         var icon = new FontIcon { Glyph = glyph, FontSize = 12, Foreground = foreground };
         Grid.SetColumn(icon, 0);
@@ -98,12 +98,12 @@ public static class ActionPanel
             {
                 CornerRadius = new CornerRadius(3),
                 Padding = new Thickness(4, 0, 4, 0),
-                Background = (Brush)Application.Current.Resources["ControlFillColorDefaultBrush"],
+                Background = ThemeHelper.Brush("ControlFillColorDefaultBrush"),
                 Child = new TextBlock
                 {
                     Text = key,
                     FontSize = 10,
-                    Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"]
+                    Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
                 }
             });
         }

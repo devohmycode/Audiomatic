@@ -12,14 +12,17 @@ public sealed partial class SettingsWindow : Window
 {
     private bool _suppressEvents = true;
     private readonly Action<BackdropSettings>? _onBackdropChanged;
+    private readonly Action<string>? _onThemeChanged;
     private readonly Action? _onLibraryChanged;
     private CancellationTokenSource? _scanCts;
 
     public SettingsWindow(SystemBackdrop? backdrop,
         Action<BackdropSettings>? onBackdropChanged = null,
+        Action<string>? onThemeChanged = null,
         Action? onLibraryChanged = null)
     {
         _onBackdropChanged = onBackdropChanged;
+        _onThemeChanged = onThemeChanged;
         _onLibraryChanged = onLibraryChanged;
 
         this.InitializeComponent();
@@ -39,18 +42,27 @@ public sealed partial class SettingsWindow : Window
 
         LoadSettings();
         LoadFolders();
+        ApplyTheme(SettingsManager.LoadTheme());
         _suppressEvents = false;
     }
 
     private void LoadSettings()
     {
-        var settings = SettingsManager.LoadBackdrop();
-        switch (settings.Type)
+        var backdrop = SettingsManager.LoadBackdrop();
+        switch (backdrop.Type)
         {
             case "mica": RadioMica.IsChecked = true; break;
             case "mica_alt": RadioMicaAlt.IsChecked = true; break;
             case "none": RadioNone.IsChecked = true; break;
             default: RadioAcrylic.IsChecked = true; break;
+        }
+
+        var theme = SettingsManager.LoadTheme();
+        switch (theme)
+        {
+            case "light": RadioThemeLight.IsChecked = true; break;
+            case "dark": RadioThemeDark.IsChecked = true; break;
+            default: RadioThemeSystem.IsChecked = true; break;
         }
     }
 
@@ -95,7 +107,7 @@ public sealed partial class SettingsWindow : Window
             {
                 Text = "No folders added yet.",
                 Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
-                Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"]
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush")
             });
         }
     }
@@ -224,6 +236,35 @@ public sealed partial class SettingsWindow : Window
             "mica_alt" => new MicaBackdrop { Kind = MicaKind.BaseAlt },
             "none" => null,
             _ => new DesktopAcrylicBackdrop()
+        };
+    }
+
+    private void ThemeRadio_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        if (ThemeRadio.SelectedItem is not RadioButton rb || rb.Tag is not string theme) return;
+
+        SettingsManager.SaveTheme(theme);
+        ApplyTheme(theme);
+        _onThemeChanged?.Invoke(theme);
+    }
+
+    private void ApplyTheme(string theme)
+    {
+        if (Content is FrameworkElement root)
+        {
+            root.RequestedTheme = theme switch
+            {
+                "light" => ElementTheme.Light,
+                "dark" => ElementTheme.Dark,
+                _ => ElementTheme.Default
+            };
+        }
+        ThemeHelper.CurrentTheme = theme switch
+        {
+            "light" => ElementTheme.Light,
+            "dark" => ElementTheme.Dark,
+            _ => ElementTheme.Default
         };
     }
 

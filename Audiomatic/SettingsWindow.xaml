@@ -82,6 +82,20 @@
                       Visibility="Collapsed">
             <StackPanel Spacing="24">
                 <StackPanel Spacing="8">
+                    <TextBlock Text="Theme"
+                               Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                    <TextBlock Text="Choose the color theme for the application."
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                    <RadioButtons x:Name="ThemeRadio" SelectionChanged="ThemeRadio_SelectionChanged">
+                        <RadioButton x:Name="RadioThemeSystem" Content="System" Tag="system"/>
+                        <RadioButton x:Name="RadioThemeLight" Content="Light" Tag="light"/>
+                        <RadioButton x:Name="RadioThemeDark" Content="Dark" Tag="dark"/>
+                    </RadioButtons>
+                </StackPanel>
+
+                <StackPanel Spacing="8">
                     <TextBlock Text="Backdrop Effect"
                                Style="{StaticResource BodyStrongTextBlockStyle}"/>
                     <TextBlock Text="Choose the visual effect applied to the window background."

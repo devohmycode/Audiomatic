@@ -133,8 +133,9 @@ public sealed partial class MainWindow : Window
         // Restore window position (default: bottom-right)
         RestoreWindowPosition();
 
-        // Apply backdrop
+        // Apply backdrop and theme
         ApplyBackdrop(SettingsManager.LoadBackdrop());
+        ApplyTheme(SettingsManager.LoadTheme());
 
         // Set up audio player
         _player.SetDispatcherQueue(DispatcherQueue);
@@ -167,7 +168,7 @@ public sealed partial class MainWindow : Window
         // Restore shuffle/repeat
         _queue.Shuffle = settings.ShuffleEnabled;
         if (settings.ShuffleEnabled)
-            ShuffleIcon.Foreground = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"];
+            ShuffleIcon.Foreground = ThemeHelper.Brush("AccentTextFillColorPrimaryBrush");
 
         if (Enum.TryParse<RepeatMode>(settings.RepeatMode, true, out var rm))
         {
@@ -300,8 +301,8 @@ public sealed partial class MainWindow : Window
                 Glyph = isPlaying ? "\uE767" : "\uE8D6",
                 FontSize = 12,
                 Foreground = isPlaying
-                    ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-                    : (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+                    ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                    : ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 VerticalAlignment = VerticalAlignment.Center,
                 Width = 16
             };
@@ -317,8 +318,8 @@ public sealed partial class MainWindow : Window
                     ? Microsoft.UI.Text.FontWeights.SemiBold
                     : Microsoft.UI.Text.FontWeights.Normal,
                 Foreground = isPlaying
-                    ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-                    : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
+                    ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                    : ThemeHelper.Brush("TextFillColorPrimaryBrush"),
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxLines = 1
             });
@@ -333,7 +334,7 @@ public sealed partial class MainWindow : Window
                 {
                     Text = string.Join(" \u00B7 ", subtitle),
                     FontSize = 11,
-                    Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                    Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
                     TextTrimming = TextTrimming.CharacterEllipsis,
                     MaxLines = 1
                 });
@@ -345,7 +346,7 @@ public sealed partial class MainWindow : Window
             {
                 Text = track.DurationFormatted,
                 FontSize = 11,
-                Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 VerticalAlignment = VerticalAlignment.Center
             };
             Grid.SetColumn(dur, 2);
@@ -371,7 +372,7 @@ public sealed partial class MainWindow : Window
                         Content = new FontIcon
                         {
                             Glyph = "\uE74A", FontSize = 9,
-                            Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"]
+                            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
                         }
                     };
                     upBtn.Click += (_, _) =>
@@ -394,7 +395,7 @@ public sealed partial class MainWindow : Window
                         Content = new FontIcon
                         {
                             Glyph = "\uE74B", FontSize = 9,
-                            Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"]
+                            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
                         }
                     };
                     downBtn.Click += (_, _) =>
@@ -611,8 +612,8 @@ public sealed partial class MainWindow : Window
     {
         _queue.Shuffle = !_queue.Shuffle;
         ShuffleIcon.Foreground = _queue.Shuffle
-            ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-            : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+            ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+            : ThemeHelper.Brush("TextFillColorPrimaryBrush");
     }
 
     private void Repeat_Click(object sender, RoutedEventArgs e)
@@ -631,8 +632,8 @@ public sealed partial class MainWindow : Window
     {
         RepeatIcon.Glyph = _queue.Repeat == RepeatMode.One ? "\uE8ED" : "\uE8EE";
         RepeatIcon.Foreground = _queue.Repeat != RepeatMode.None
-            ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-            : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+            ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+            : ThemeHelper.Brush("TextFillColorPrimaryBrush");
     }
 
     // -- Timeline -------------------------------------------------
@@ -810,8 +811,8 @@ public sealed partial class MainWindow : Window
                 ? Microsoft.UI.Text.FontWeights.SemiBold
                 : Microsoft.UI.Text.FontWeights.Normal;
             tb.Foreground = active
-                ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-                : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+                ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                : ThemeHelper.Brush("TextFillColorPrimaryBrush");
         }
         SetTab(NavLibraryText, _viewMode == ViewMode.Library);
         SetTab(NavPlaylistsText, _viewMode == ViewMode.PlaylistList);
@@ -845,7 +846,7 @@ public sealed partial class MainWindow : Window
             {
                 Glyph = "\uE8FD",
                 FontSize = 14,
-                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
                 VerticalAlignment = VerticalAlignment.Center,
                 Width = 16
             };
@@ -856,7 +857,7 @@ public sealed partial class MainWindow : Window
             {
                 Text = playlist.Name,
                 FontSize = 13,
-                Foreground = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
+                Foreground = ThemeHelper.Brush("TextFillColorPrimaryBrush"),
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxLines = 1
             });
@@ -864,7 +865,7 @@ public sealed partial class MainWindow : Window
             {
                 Text = $"{tracks.Count} track{(tracks.Count != 1 ? "s" : "")}",
                 FontSize = 11,
-                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
                 MaxLines = 1
             });
             Grid.SetColumn(info, 1);
@@ -873,7 +874,7 @@ public sealed partial class MainWindow : Window
             {
                 Glyph = "\uE76C",
                 FontSize = 11,
-                Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 VerticalAlignment = VerticalAlignment.Center
             };
             Grid.SetColumn(chevron, 2);
@@ -1111,7 +1112,7 @@ public sealed partial class MainWindow : Window
                 {
                     Glyph = "\uE767",
                     FontSize = 12,
-                    Foreground = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"],
+                    Foreground = ThemeHelper.Brush("AccentTextFillColorPrimaryBrush"),
                     VerticalAlignment = VerticalAlignment.Center,
                     Width = 20
                 };
@@ -1122,7 +1123,7 @@ public sealed partial class MainWindow : Window
                 {
                     Text = $"{i + 1}",
                     FontSize = 11,
-                    Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+                    Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                     VerticalAlignment = VerticalAlignment.Center,
                     Width = 20,
                     TextAlignment = TextAlignment.Center
@@ -1139,8 +1140,8 @@ public sealed partial class MainWindow : Window
                     ? Microsoft.UI.Text.FontWeights.SemiBold
                     : Microsoft.UI.Text.FontWeights.Normal,
                 Foreground = isCurrent
-                    ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-                    : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
+                    ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                    : ThemeHelper.Brush("TextFillColorPrimaryBrush"),
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxLines = 1
             });
@@ -1154,7 +1155,7 @@ public sealed partial class MainWindow : Window
                 {
                     Text = string.Join(" \u00B7 ", subtitle),
                     FontSize = 11,
-                    Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                    Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
                     TextTrimming = TextTrimming.CharacterEllipsis,
                     MaxLines = 1
                 });
@@ -1165,7 +1166,7 @@ public sealed partial class MainWindow : Window
             {
                 Text = track.DurationFormatted,
                 FontSize = 11,
-                Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 VerticalAlignment = VerticalAlignment.Center
             };
             Grid.SetColumn(dur, 2);
@@ -1190,7 +1191,7 @@ public sealed partial class MainWindow : Window
                     {
                         Glyph = "\uE74A",
                         FontSize = 9,
-                        Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"]
+                        Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
                     }
                 };
                 upBtn.Click += (_, _) =>
@@ -1214,7 +1215,7 @@ public sealed partial class MainWindow : Window
                     {
                         Glyph = "\uE74B",
                         FontSize = 9,
-                        Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"]
+                        Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
                     }
                 };
                 downBtn.Click += (_, _) =>
@@ -1432,6 +1433,28 @@ public sealed partial class MainWindow : Window
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
+        // Theme section
+        var currentTheme = SettingsManager.LoadTheme();
+        panel.Children.Add(ActionPanel.CreateSectionHeader("Theme"));
+
+        void AddThemeOption(string theme, string label)
+        {
+            var isActive = currentTheme == theme;
+            panel.Children.Add(ActionPanel.CreateButton(
+                isActive ? "\uE73E" : "\uE8D7", label, [], () =>
+            {
+                SettingsManager.SaveTheme(theme);
+                ApplyTheme(theme);
+                flyout.Hide();
+            }, isActive: isActive));
+        }
+
+        AddThemeOption("system", "System");
+        AddThemeOption("light", "Light");
+        AddThemeOption("dark", "Dark");
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
         // Toggle actions
         panel.Children.Add(ActionPanel.CreateButton("\uE73F",
             _isCollapsed ? "Expand" : "Compact Mode",
@@ -1490,6 +1513,29 @@ public sealed partial class MainWindow : Window
             "none" => null,
             _ => new DesktopAcrylicBackdrop()
         };
+    }
+
+    private void ApplyTheme(string theme)
+    {
+        if (Content is FrameworkElement root)
+        {
+            var elementTheme = theme switch
+            {
+                "light" => ElementTheme.Light,
+                "dark" => ElementTheme.Dark,
+                _ => ElementTheme.Default
+            };
+            root.RequestedTheme = elementTheme;
+            ThemeHelper.CurrentTheme = elementTheme;
+
+            // Rebuild dynamic UI so code-behind elements pick up the new theme brushes
+            ApplyFilterAndSort();
+            UpdateNavigation();
+            UpdateRepeatIcon();
+            ShuffleIcon.Foreground = _queue.Shuffle
+                ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                : ThemeHelper.Brush("TextFillColorPrimaryBrush");
+        }
     }
 
     // -- Collapse animation ----------------------------------------
