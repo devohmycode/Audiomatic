@@ -60,11 +60,30 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 | **Playlists** | Manage playlists and view track counts |
 | **Playlist Detail** | View and reorder tracks within a playlist |
 | **Queue** | View and manage the current playback queue |
+| **Visualizer** | Real-time FFT spectrum analyzer with mirror mode |
+| **Media Control** | Monitor and control background media players (SMTC) |
+
+### Metadata Editor
+
+- **Inline tag editing** — edit title, artist, and album directly from the track context menu
+- **Artwork management** — change cover art from file (JPG/PNG) or remove existing artwork
+- Writes tags back to the audio file via TagLibSharp
+- Automatically updates the library database and current playback display
+
+### Media Control
+
+- **Background media monitoring** — detect and display all active system media sessions
+- **Per-session cards** — thumbnail, app name, title, artist for each media source
+- **Playback controls** — play/pause, previous, next per session
+- **Timeline scrubbing** — seek within tracks with real-time position and duration display
+- **Live updates** — automatically refreshes when sessions start, stop, or change tracks
 
 ### Window & UI
 
-- **Compact design** — 380x710px (collapsible to 380x220px)
-- **Collapse/Expand** with smooth animation anchored to bottom
+- **Three display modes** — Expanded (710px), Compact (220px), and Mini-player (60px)
+- **Mini-player** — ultra-compact mode showing album art, track info, and play/pause button
+- **Animated transitions** — Fluent slide+fade animations between views
+- **Collapse cycling** with smooth animation anchored to bottom (`Ctrl+L`)
 - **Always-on-Top** pin mode
 - **Backdrop options**: Acrylic, Mica, Mica Alt, None
 - **Theme support**: System, Light, Dark
@@ -79,7 +98,7 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 - **Drag & Drop** — drop audio files from Explorer to play or queue them
 - **Global hotkeys**:
   - `Ctrl+Alt+M` — Show/Hide window
-  - `Ctrl+L` — Toggle compact mode
+  - `Ctrl+L` — Cycle display modes (Expanded → Compact → Mini → Expanded)
   - `Space` — Play/Pause (when not searching)
   - `Escape` — Close window
 
@@ -87,7 +106,8 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 
 - Library management (add folders, rescan, reset)
 - Backdrop and theme selection
-- Compact mode and pin-on-top toggles
+- Display mode cycling and pin-on-top toggles
+- Visualizer FPS selection (30 / 60 FPS)
 - All preferences persisted in `settings.json`
 
 ![Audiomatic2](https://res.cloudinary.com/dptrimoqv/image/upload/v1773226483/52shots_so_elqw2c.png)

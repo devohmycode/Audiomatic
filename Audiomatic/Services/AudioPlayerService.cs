@@ -249,6 +249,23 @@ public sealed class AudioPlayerService : IDisposable
         else Play();
     }
 
+    private static readonly string[] CoverFileNames = { "cover", "folder", "album", "front", "artwork" };
+    private static readonly string[] CoverExtensions = { ".jpg", ".jpeg", ".png", ".bmp", ".webp" };
+
+    private static string? FindCoverFile(string folder)
+    {
+        foreach (var name in CoverFileNames)
+        {
+            foreach (var ext in CoverExtensions)
+            {
+                var path = System.IO.Path.Combine(folder, name + ext);
+                if (System.IO.File.Exists(path))
+                    return path;
+            }
+        }
+        return null;
+    }
+
     private void UpdateSmtc(TrackInfo track)
     {
         try
@@ -266,29 +283,51 @@ public sealed class AudioPlayerService : IDisposable
             updater.MusicProperties.Title = track.Title;
             updater.MusicProperties.Artist = track.Artist;
             updater.MusicProperties.AlbumTitle = track.Album;
+            updater.Update();
+        }
+        catch { }
+    }
 
-            // Try to set album art from embedded tag
-            try
+    /// <summary>
+    /// Sets SMTC thumbnail from artwork data already read by the caller.
+    /// Avoids a duplicate TagLib read.
+    /// </summary>
+    public void UpdateSmtcArtwork(byte[]? embeddedArtData, string? coverFilePath)
+    {
+        try
+        {
+            var updater = _mediaPlayer.SystemMediaTransportControls.DisplayUpdater;
+
+            if (embeddedArtData != null)
             {
-                using var tagFile = TagLib.File.Create(track.Path);
-                if (tagFile.Tag.Pictures.Length > 0)
-                {
-                    var pic = tagFile.Tag.Pictures[0];
-                    var newStream = new InMemoryRandomAccessStream();
-                    var writer = new DataWriter(newStream.GetOutputStreamAt(0));
-                    writer.WriteBytes(pic.Data.Data);
-                    writer.StoreAsync().GetResults();
-                    updater.Thumbnail = RandomAccessStreamReference.CreateFromStream(newStream);
+                var newStream = new InMemoryRandomAccessStream();
+                var writer = new DataWriter(newStream.GetOutputStreamAt(0));
+                writer.WriteBytes(embeddedArtData);
+                writer.StoreAsync().GetResults();
+                updater.Thumbnail = RandomAccessStreamReference.CreateFromStream(newStream);
 
-                    _albumArtStream?.Dispose();
-                    _albumArtStream = newStream;
-                }
+                _albumArtStream?.Dispose();
+                _albumArtStream = newStream;
             }
-            catch { }
+            else if (coverFilePath != null)
+            {
+                var uri = new Uri(coverFilePath);
+                updater.Thumbnail = RandomAccessStreamReference.CreateFromUri(uri);
+            }
 
             updater.Update();
         }
         catch { }
+    }
+
+    public void SuspendPositionTimer()
+    {
+        _positionTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+    }
+
+    public void ResumePositionTimer()
+    {
+        _positionTimer?.Change(0, 250);
     }
 
     public void Dispose()

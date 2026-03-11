@@ -109,6 +109,19 @@
                         <RadioButton x:Name="RadioNone" Content="None" Tag="none"/>
                     </RadioButtons>
                 </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <TextBlock Text="Visualizer"
+                               Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                    <TextBlock Text="Frame rate for the audio visualizer."
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                    <RadioButtons x:Name="FpsRadio" SelectionChanged="FpsRadio_SelectionChanged">
+                        <RadioButton x:Name="RadioFps30" Content="30 FPS" Tag="30"/>
+                        <RadioButton x:Name="RadioFps60" Content="60 FPS" Tag="60"/>
+                    </RadioButtons>
+                </StackPanel>
             </StackPanel>
         </ScrollViewer>
     </Grid>

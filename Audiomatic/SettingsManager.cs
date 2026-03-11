@@ -19,6 +19,7 @@ public record AppSettings(
     bool SortAscending,
     string Language,     // "fr", "en"
     string Theme = "system",  // "system", "light", "dark"
+    int VisualizerFps = 30,
     int? WindowX = null,
     int? WindowY = null);
 

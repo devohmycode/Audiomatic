@@ -9,8 +9,10 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Media.Control;
 using Windows.Storage;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
@@ -29,14 +31,31 @@ public sealed partial class MainWindow : Window
     private bool _sortAscending = true;
 
     // Playlist navigation
-    private enum ViewMode { Library, PlaylistList, PlaylistDetail, Queue }
+    private enum ViewMode { Library, PlaylistList, PlaylistDetail, Queue, Visualizer, MediaControl }
     private ViewMode _viewMode = ViewMode.Library;
     private PlaylistInfo? _currentPlaylist;
 
+    // Visualizer
+    private readonly SpectrumAnalyzer _spectrum = new();
+    private DispatcherTimer? _spectrumTimer;
+    private int _vizFps = 30;
+    private int _vizBandCount;  // tracks current bar count for reuse
+    private TextBlock? _vizNoTrackText;
+
+    // View transition animation
+    private bool _isViewTransitioning;
+
+    // Media control
+    private Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager? _mediaSessionManager;
+    private readonly Dictionary<string, MediaSessionPanel> _mediaSessionPanels = new();
+    private DispatcherTimer? _mediaTickTimer;
+
     // Collapse animation
-    private bool _isCollapsed;
+    private enum CollapseState { Expanded, Compact, Mini }
+    private CollapseState _collapseState = CollapseState.Expanded;
     private readonly int _expandedHeight = 710;
     private readonly int _collapsedHeight = 220;
+    private readonly int _miniHeight = 60;
     private DispatcherTimer? _animTimer;
     private int _targetHeight;
     private int _currentAnimHeight;
@@ -160,11 +179,16 @@ public sealed partial class MainWindow : Window
         LoadTracks();
         UpdateNavigation();
 
-        // Restore queue state
+        // Restore queue state (display info only, not playing yet)
         _queue.LoadState(_allTracks);
         if (_queue.CurrentTrack != null)
         {
-            UpdateNowPlaying(_queue.CurrentTrack);
+            var t = _queue.CurrentTrack;
+            TrackTitle.Text = t.Title;
+            TrackArtist.Text = t.Artist;
+            TrackAlbum.Text = t.Album;
+            LoadAlbumArt(t.Path);
+            UpdateMiniPlayer(t);
         }
 
         // Restore shuffle/repeat
@@ -177,6 +201,8 @@ public sealed partial class MainWindow : Window
             _queue.Repeat = rm;
             UpdateRepeatIcon();
         }
+
+        _vizFps = settings.VisualizerFps;
 
         // Subclass window for hotkey/tray messages
         _wndProcDelegate = new WndProcDelegate(WndProc);
@@ -207,9 +233,15 @@ public sealed partial class MainWindow : Window
                 RepeatMode = _queue.Repeat.ToString(),
                 SortBy = _sortBy,
                 SortAscending = _sortAscending,
+                VisualizerFps = _vizFps,
                 WindowX = pos.X,
                 WindowY = pos.Y
             });
+            _mediaTickTimer?.Stop();
+            foreach (var p in _mediaSessionPanels.Values) p.Detach();
+            _mediaSessionPanels.Clear();
+            _spectrumTimer?.Stop();
+            _spectrum.Dispose();
             _player.Dispose();
         };
     }
@@ -235,6 +267,9 @@ public sealed partial class MainWindow : Window
             BuildQueueView();
             return;
         }
+
+        if (_viewMode == ViewMode.Visualizer)
+            return;
 
         List<TrackInfo> source = _viewMode == ViewMode.PlaylistDetail && _currentPlaylist != null
             ? LibraryManager.GetPlaylistTracks(_currentPlaylist.Id)
@@ -480,6 +515,7 @@ public sealed partial class MainWindow : Window
         else
         {
             PlayPauseIcon.Glyph = "\uE768";
+            MiniPlayPauseIcon.Glyph = "\uE768";
         }
     }
 
@@ -496,6 +532,7 @@ public sealed partial class MainWindow : Window
         TimelineSlider.Value = pos.TotalSeconds;
         PositionText.Text = FormatTime(pos);
         _isSeeking = false;
+
     }
 
     private void UpdateNowPlaying(TrackInfo track)
@@ -504,25 +541,60 @@ public sealed partial class MainWindow : Window
         TrackArtist.Text = track.Artist;
         TrackAlbum.Text = track.Album;
         PlayPauseIcon.Glyph = "\uE769"; // Pause icon
+        MiniPlayPauseIcon.Glyph = "\uE769";
         LoadAlbumArt(track.Path);
+        UpdateMiniPlayer(track);
         // Re-highlight current track in the appropriate view
-        if (_viewMode == ViewMode.Queue)
+        if (_viewMode == ViewMode.Visualizer)
+            PrepareSpectrumForCurrentTrack();
+        else if (_viewMode == ViewMode.Queue)
             BuildQueueView();
         else if (_viewMode != ViewMode.PlaylistList)
             RebuildTrackList();
     }
 
+    private void UpdateMiniPlayer(TrackInfo? track)
+    {
+        if (track == null)
+        {
+            MiniTrackText.Text = "No track";
+            MiniAlbumArt.Source = null;
+            MiniAlbumArt.Visibility = Visibility.Collapsed;
+            MiniAlbumArtPlaceholder.Visibility = Visibility.Visible;
+            return;
+        }
+
+        var display = string.IsNullOrEmpty(track.Artist)
+            ? track.Title
+            : $"{track.Title} \u2014 {track.Artist}";
+        MiniTrackText.Text = display;
+
+        // Share album art from main display
+        MiniAlbumArt.Source = AlbumArtImage.Source;
+        var hasArt = AlbumArtImage.Source != null;
+        MiniAlbumArt.Visibility = hasArt ? Visibility.Visible : Visibility.Collapsed;
+        MiniAlbumArtPlaceholder.Visibility = hasArt ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private static readonly string[] CoverFileNames = { "cover", "folder", "album", "front", "artwork" };
+    private static readonly string[] CoverExtensions = { ".jpg", ".jpeg", ".png", ".bmp", ".webp" };
+
     private async void LoadAlbumArt(string filePath)
     {
+        byte[]? embeddedArtData = null;
+        string? coverFilePath = null;
+
+        // 1. Try embedded tag artwork (single TagLib read — also used for SMTC)
         try
         {
             using var tagFile = TagLib.File.Create(filePath);
             if (tagFile.Tag.Pictures.Length > 0)
             {
-                var pic = tagFile.Tag.Pictures[0];
+                embeddedArtData = tagFile.Tag.Pictures[0].Data.Data;
+
                 using var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
                 using var writer = new Windows.Storage.Streams.DataWriter(stream.GetOutputStreamAt(0));
-                writer.WriteBytes(pic.Data.Data);
+                writer.WriteBytes(embeddedArtData);
                 await writer.StoreAsync();
                 stream.Seek(0);
 
@@ -531,7 +603,31 @@ public sealed partial class MainWindow : Window
                 AlbumArtImage.Source = bitmap;
                 AlbumArtPlaceholder.Visibility = Visibility.Collapsed;
                 AlbumArtImage.Visibility = Visibility.Visible;
+
+                _player.UpdateSmtcArtwork(embeddedArtData, null);
                 return;
+            }
+        }
+        catch { }
+
+        // 2. Try cover image file in the same folder
+        try
+        {
+            var folder = System.IO.Path.GetDirectoryName(filePath);
+            if (folder != null)
+            {
+                coverFilePath = FindCoverFile(folder);
+                if (coverFilePath != null)
+                {
+                    var bitmap = new BitmapImage();
+                    bitmap.UriSource = new Uri(coverFilePath);
+                    AlbumArtImage.Source = bitmap;
+                    AlbumArtPlaceholder.Visibility = Visibility.Collapsed;
+                    AlbumArtImage.Visibility = Visibility.Visible;
+
+                    _player.UpdateSmtcArtwork(null, coverFilePath);
+                    return;
+                }
             }
         }
         catch { }
@@ -539,6 +635,21 @@ public sealed partial class MainWindow : Window
         AlbumArtImage.Source = null;
         AlbumArtImage.Visibility = Visibility.Collapsed;
         AlbumArtPlaceholder.Visibility = Visibility.Visible;
+        _player.UpdateSmtcArtwork(null, null);
+    }
+
+    private static string? FindCoverFile(string folder)
+    {
+        foreach (var name in CoverFileNames)
+        {
+            foreach (var ext in CoverExtensions)
+            {
+                var path = System.IO.Path.Combine(folder, name + ext);
+                if (System.IO.File.Exists(path))
+                    return path;
+            }
+        }
+        return null;
     }
 
     // -- Controls -------------------------------------------------
@@ -567,6 +678,7 @@ public sealed partial class MainWindow : Window
 
         _player.TogglePlayPause();
         PlayPauseIcon.Glyph = _player.IsPlaying ? "\uE769" : "\uE768";
+        MiniPlayPauseIcon.Glyph = PlayPauseIcon.Glyph;
     }
 
     private async void Prev_Click(object sender, RoutedEventArgs e)
@@ -754,18 +866,24 @@ public sealed partial class MainWindow : Window
 
     private void NavLibrary_Click(object sender, RoutedEventArgs e)
     {
+        if (_viewMode == ViewMode.Library) return;
         _viewMode = ViewMode.Library;
         _currentPlaylist = null;
         UpdateNavigation();
-        ApplyFilterAndSort();
+        UpdateSpectrumTimer();
+        UpdateMediaTimer();
+        AnimateViewTransition(() => ApplyFilterAndSort());
     }
 
     private void NavPlaylists_Click(object sender, RoutedEventArgs e)
     {
+        if (_viewMode == ViewMode.PlaylistList) return;
         _viewMode = ViewMode.PlaylistList;
         _currentPlaylist = null;
         UpdateNavigation();
-        LoadPlaylistList();
+        UpdateSpectrumTimer();
+        UpdateMediaTimer();
+        AnimateViewTransition(() => LoadPlaylistList());
     }
 
     private void NavBack_Click(object sender, RoutedEventArgs e)
@@ -819,14 +937,115 @@ public sealed partial class MainWindow : Window
         SetTab(NavLibraryText, _viewMode == ViewMode.Library);
         SetTab(NavPlaylistsText, _viewMode == ViewMode.PlaylistList);
         SetTab(NavQueueText, _viewMode == ViewMode.Queue);
+        SetTab(NavVisualizerText, _viewMode == ViewMode.Visualizer);
+        SetTab(NavMediaText, _viewMode == ViewMode.MediaControl);
 
         // Show/hide search & sort
         SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail)
             ? Visibility.Visible : Visibility.Collapsed;
 
+        // Show/hide content containers based on view mode
+        var isTrackView = _viewMode != ViewMode.Visualizer && _viewMode != ViewMode.MediaControl;
+        TrackListView.Visibility = isTrackView ? Visibility.Visible : Visibility.Collapsed;
+        WaveformContainer.Visibility = _viewMode == ViewMode.Visualizer
+            ? Visibility.Visible : Visibility.Collapsed;
+        MediaContainer.Visibility = _viewMode == ViewMode.MediaControl
+            ? Visibility.Visible : Visibility.Collapsed;
+
         // Playlist detail name
         if (_currentPlaylist != null)
             PlaylistNameText.Text = _currentPlaylist.Name;
+    }
+
+    private void AnimateViewTransition(Action buildNewContent, bool slideFromRight = true)
+    {
+        if (_isViewTransitioning) return;
+        _isViewTransitioning = true;
+
+        // Target the visible content container
+        FrameworkElement target = _viewMode == ViewMode.Visualizer ? WaveformContainer
+            : _viewMode == ViewMode.MediaControl ? MediaContainer
+            : TrackListView;
+
+        if (target.RenderTransform is not TranslateTransform)
+            target.RenderTransform = new TranslateTransform();
+
+        var transform = (TranslateTransform)target.RenderTransform;
+        double direction = slideFromRight ? -1 : 1;
+
+        // Phase 1: Exit — slide out + fade
+        var exitX = new DoubleAnimation
+        {
+            From = 0,
+            To = 30 * direction,
+            Duration = new Duration(TimeSpan.FromMilliseconds(120)),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+        };
+        Storyboard.SetTarget(exitX, transform);
+        Storyboard.SetTargetProperty(exitX, "X");
+
+        var exitOpacity = new DoubleAnimation
+        {
+            From = 1,
+            To = 0,
+            Duration = new Duration(TimeSpan.FromMilliseconds(120)),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+        };
+        Storyboard.SetTarget(exitOpacity, target);
+        Storyboard.SetTargetProperty(exitOpacity, "Opacity");
+
+        var exitStoryboard = new Storyboard();
+        exitStoryboard.Children.Add(exitX);
+        exitStoryboard.Children.Add(exitOpacity);
+
+        exitStoryboard.Completed += (_, _) =>
+        {
+            buildNewContent();
+
+            // Re-target if container changed (e.g. Library→Visualizer)
+            FrameworkElement newTarget = _viewMode == ViewMode.Visualizer ? WaveformContainer
+                : _viewMode == ViewMode.MediaControl ? MediaContainer
+                : TrackListView;
+
+            if (newTarget.RenderTransform is not TranslateTransform)
+                newTarget.RenderTransform = new TranslateTransform();
+
+            var newTransform = (TranslateTransform)newTarget.RenderTransform;
+
+            // Phase 2: Enter — slide in + fade
+            var enterX = new DoubleAnimation
+            {
+                From = -30 * direction,
+                To = 0,
+                Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            Storyboard.SetTarget(enterX, newTransform);
+            Storyboard.SetTargetProperty(enterX, "X");
+
+            var enterOpacity = new DoubleAnimation
+            {
+                From = 0,
+                To = 1,
+                Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            Storyboard.SetTarget(enterOpacity, newTarget);
+            Storyboard.SetTargetProperty(enterOpacity, "Opacity");
+
+            var enterStoryboard = new Storyboard();
+            enterStoryboard.Children.Add(enterX);
+            enterStoryboard.Children.Add(enterOpacity);
+
+            enterStoryboard.Completed += (_, _) =>
+            {
+                _isViewTransitioning = false;
+            };
+
+            enterStoryboard.Begin();
+        };
+
+        exitStoryboard.Begin();
     }
 
     private void LoadPlaylistList()
@@ -955,6 +1174,13 @@ public sealed partial class MainWindow : Window
             }
         }));
 
+        // Edit tags
+        panel.Children.Add(ActionPanel.CreateSeparator());
+        panel.Children.Add(ActionPanel.CreateButton("\uE70F", "Edit Tags", [], () =>
+        {
+            flyout.Content = BuildMetadataEditorContent(flyout, track);
+        }));
+
         // Remove from playlist (playlist detail only)
         if (_viewMode == ViewMode.PlaylistDetail && _currentPlaylist != null)
         {
@@ -1073,14 +1299,297 @@ public sealed partial class MainWindow : Window
         return panel;
     }
 
+    private StackPanel BuildMetadataEditorContent(Flyout flyout, TrackInfo track)
+    {
+        var panel = new StackPanel { Spacing = 6, Padding = new Thickness(4) };
+
+        // Back button + header
+        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var backBtn = new Button
+        {
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(4, 2, 4, 2),
+            MinHeight = 0, MinWidth = 0,
+            Content = new FontIcon { Glyph = "\uE72B", FontSize = 12 }
+        };
+        backBtn.Click += (_, _) =>
+        {
+            flyout.Content = BuildTrackContextContent(flyout, track);
+        };
+        header.Children.Add(backBtn);
+        header.Children.Add(new TextBlock
+        {
+            Text = "Edit Tags",
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        panel.Children.Add(header);
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        // Artwork preview + buttons
+        var artworkGrid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        artworkGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        artworkGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var artPreview = new Image
+        {
+            Width = 64, Height = 64,
+            Stretch = Stretch.UniformToFill
+        };
+        var artPlaceholder = new FontIcon
+        {
+            Glyph = "\uE8D6", FontSize = 24, Width = 64, Height = 64,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush")
+        };
+
+        byte[]? pendingArtwork = null;
+        bool removeArtwork = false;
+
+        // Load current artwork
+        try
+        {
+            using var tagFile = TagLib.File.Create(track.Path);
+            if (tagFile.Tag.Pictures.Length > 0)
+            {
+                var pic = tagFile.Tag.Pictures[0];
+                var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+                var writer = new Windows.Storage.Streams.DataWriter(stream.GetOutputStreamAt(0));
+                writer.WriteBytes(pic.Data.Data);
+                _ = writer.StoreAsync().AsTask().Result;
+                stream.Seek(0);
+                var bitmap = new BitmapImage();
+                bitmap.SetSource(stream);
+                artPreview.Source = bitmap;
+                artPlaceholder.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                artPreview.Visibility = Visibility.Collapsed;
+            }
+        }
+        catch
+        {
+            artPreview.Visibility = Visibility.Collapsed;
+        }
+
+        var artContainer = new Grid
+        {
+            Width = 64, Height = 64, CornerRadius = new CornerRadius(4),
+            Background = ThemeHelper.Brush("CardBackgroundFillColorSecondaryBrush")
+        };
+        artContainer.Children.Add(artPreview);
+        artContainer.Children.Add(artPlaceholder);
+        Grid.SetColumn(artContainer, 0);
+
+        var artButtons = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 0, 0),
+            Spacing = 4
+        };
+
+        var changeArtBtn = new Button
+        {
+            Content = "Change",
+            FontSize = 11,
+            Padding = new Thickness(8, 3, 8, 3),
+            MinHeight = 0
+        };
+        changeArtBtn.Click += async (_, _) =>
+        {
+            var picker = new FileOpenPicker();
+            picker.SuggestedStartLocation = PickerLocationId.PicturesLibrary;
+            picker.FileTypeFilter.Add(".jpg");
+            picker.FileTypeFilter.Add(".jpeg");
+            picker.FileTypeFilter.Add(".png");
+
+            InitializeWithWindow.Initialize(picker, _hwnd);
+
+            var file = await picker.PickSingleFileAsync();
+            if (file == null) return;
+
+            pendingArtwork = await System.IO.File.ReadAllBytesAsync(file.Path);
+            removeArtwork = false;
+
+            var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+            var writer = new Windows.Storage.Streams.DataWriter(stream.GetOutputStreamAt(0));
+            writer.WriteBytes(pendingArtwork);
+            await writer.StoreAsync();
+            stream.Seek(0);
+            var bitmap = new BitmapImage();
+            bitmap.SetSource(stream);
+            artPreview.Source = bitmap;
+            artPreview.Visibility = Visibility.Visible;
+            artPlaceholder.Visibility = Visibility.Collapsed;
+        };
+        artButtons.Children.Add(changeArtBtn);
+
+        var removeArtBtn = new Button
+        {
+            Content = "Remove",
+            FontSize = 11,
+            Padding = new Thickness(8, 3, 8, 3),
+            MinHeight = 0
+        };
+        removeArtBtn.Click += (_, _) =>
+        {
+            removeArtwork = true;
+            pendingArtwork = null;
+            artPreview.Source = null;
+            artPreview.Visibility = Visibility.Collapsed;
+            artPlaceholder.Visibility = Visibility.Visible;
+        };
+        artButtons.Children.Add(removeArtBtn);
+
+        Grid.SetColumn(artButtons, 1);
+        artworkGrid.Children.Add(artContainer);
+        artworkGrid.Children.Add(artButtons);
+        panel.Children.Add(artworkGrid);
+
+        // Text fields
+        var titleBox = new TextBox
+        {
+            Header = "Title",
+            Text = track.Title,
+            FontSize = 12,
+            Padding = new Thickness(8, 5, 8, 5)
+        };
+        panel.Children.Add(titleBox);
+
+        var artistBox = new TextBox
+        {
+            Header = "Artist",
+            Text = track.Artist,
+            FontSize = 12,
+            Padding = new Thickness(8, 5, 8, 5)
+        };
+        panel.Children.Add(artistBox);
+
+        var albumBox = new TextBox
+        {
+            Header = "Album",
+            Text = track.Album,
+            FontSize = 12,
+            Padding = new Thickness(8, 5, 8, 5)
+        };
+        panel.Children.Add(albumBox);
+
+        // Error message area
+        var errorText = new TextBlock
+        {
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 99, 99)),
+            TextWrapping = TextWrapping.Wrap,
+            Visibility = Visibility.Collapsed
+        };
+        panel.Children.Add(errorText);
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        // Save / Cancel buttons
+        var buttonRow = new Grid();
+        buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var saveBtn = new Button
+        {
+            Content = "Save",
+            FontSize = 12,
+            Padding = new Thickness(16, 5, 16, 5),
+            Style = (Style)Application.Current.Resources["AccentButtonStyle"]
+        };
+        saveBtn.Click += (_, _) =>
+        {
+            var newTitle = titleBox.Text.Trim();
+            var newArtist = artistBox.Text.Trim();
+            var newAlbum = albumBox.Text.Trim();
+
+            if (string.IsNullOrEmpty(newTitle))
+                newTitle = Path.GetFileNameWithoutExtension(track.Path);
+
+            // Write tags to file
+            var result = MetadataWriter.WriteTags(track.Path, newTitle, newArtist, newAlbum);
+            if (!result.Success)
+            {
+                errorText.Text = result.Error ?? "Unknown error";
+                errorText.Visibility = Visibility.Visible;
+                return;
+            }
+
+            // Write artwork if changed
+            if (pendingArtwork != null || removeArtwork)
+            {
+                var artResult = MetadataWriter.WriteArtwork(track.Path,
+                    removeArtwork ? null : pendingArtwork);
+                if (!artResult.Success)
+                {
+                    errorText.Text = artResult.Error ?? "Unknown error";
+                    errorText.Visibility = Visibility.Visible;
+                    return;
+                }
+            }
+
+            // Update database
+            LibraryManager.UpdateTrackMetadata(track.Id, newTitle, newArtist, newAlbum);
+
+            // Update in-memory track
+            track.Title = newTitle;
+            track.Artist = newArtist;
+            track.Album = newAlbum;
+
+            // Refresh UI
+            LoadTracks();
+
+            // If this is the currently playing track, update now-playing display
+            if (_queue.CurrentTrack?.Id == track.Id)
+            {
+                _queue.CurrentTrack.Title = newTitle;
+                _queue.CurrentTrack.Artist = newArtist;
+                _queue.CurrentTrack.Album = newAlbum;
+                TrackTitle.Text = newTitle;
+                TrackArtist.Text = newArtist;
+                TrackAlbum.Text = newAlbum;
+                UpdateMiniPlayer(_queue.CurrentTrack);
+
+                if (pendingArtwork != null || removeArtwork)
+                    LoadAlbumArt(track.Path);
+            }
+
+            flyout.Hide();
+        };
+        Grid.SetColumn(saveBtn, 1);
+
+        var cancelBtn = new Button
+        {
+            Content = "Cancel",
+            FontSize = 12,
+            Padding = new Thickness(12, 5, 12, 5)
+        };
+        cancelBtn.Click += (_, _) => flyout.Hide();
+        Grid.SetColumn(cancelBtn, 0);
+
+        buttonRow.Children.Add(cancelBtn);
+        buttonRow.Children.Add(saveBtn);
+        panel.Children.Add(buttonRow);
+
+        return panel;
+    }
+
     // -- Queue view -----------------------------------------------
 
     private void NavQueue_Click(object sender, RoutedEventArgs e)
     {
+        if (_viewMode == ViewMode.Queue) return;
         _viewMode = ViewMode.Queue;
         _currentPlaylist = null;
         UpdateNavigation();
-        BuildQueueView();
+        UpdateSpectrumTimer();
+        UpdateMediaTimer();
+        AnimateViewTransition(() => BuildQueueView());
     }
 
     private void ClearQueue_Click(object sender, RoutedEventArgs e)
@@ -1088,6 +1597,255 @@ public sealed partial class MainWindow : Window
         _queue.Clear();
         BuildQueueView();
     }
+
+    // -- Visualizer -----------------------------------------------
+
+    private void NavVisualizer_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewMode == ViewMode.Visualizer) return;
+        _viewMode = ViewMode.Visualizer;
+        _currentPlaylist = null;
+        UpdateNavigation();
+        UpdateSpectrumTimer();
+        UpdateMediaTimer();
+        AnimateViewTransition(() => { /* visualizer draws via timer */ });
+    }
+
+    private void NavMedia_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewMode == ViewMode.MediaControl) return;
+        _viewMode = ViewMode.MediaControl;
+        _currentPlaylist = null;
+        UpdateNavigation();
+        UpdateSpectrumTimer();
+        AnimateViewTransition(() => _ = InitMediaSessionsAsync());
+    }
+
+    // -- Media control ------------------------------------------------
+
+    private async Task InitMediaSessionsAsync()
+    {
+        if (_mediaSessionManager == null)
+        {
+            try
+            {
+                _mediaSessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+                _mediaSessionManager.SessionsChanged += (_, _) =>
+                    DispatcherQueue.TryEnqueue(RebuildMediaSessionList);
+            }
+            catch { return; }
+        }
+
+        RebuildMediaSessionList();
+        UpdateMediaTimer();
+    }
+
+    private void RebuildMediaSessionList()
+    {
+        if (_mediaSessionManager == null) return;
+
+        // Detach old panels
+        foreach (var panel in _mediaSessionPanels.Values)
+            panel.Detach();
+        _mediaSessionPanels.Clear();
+        MediaSessionList.Children.Clear();
+
+        var sessions = _mediaSessionManager.GetSessions();
+
+        if (sessions.Count == 0)
+        {
+            MediaSessionList.Children.Add(new StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Spacing = 8,
+                Margin = new Thickness(0, 40, 0, 0),
+                Children =
+                {
+                    new FontIcon
+                    {
+                        Glyph = "\uE8D6", FontSize = 36,
+                        Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+                        HorizontalAlignment = HorizontalAlignment.Center
+                    },
+                    new TextBlock
+                    {
+                        Text = "No media playing",
+                        Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
+                        HorizontalAlignment = HorizontalAlignment.Center
+                    },
+                    new TextBlock
+                    {
+                        Text = "Play music or a video to control it here",
+                        Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                        Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+                        HorizontalAlignment = HorizontalAlignment.Center
+                    }
+                }
+            });
+        }
+        else
+        {
+            foreach (var session in sessions)
+            {
+                var id = session.SourceAppUserModelId;
+                var panel = new MediaSessionPanel(session, DispatcherQueue);
+                _mediaSessionPanels[id] = panel;
+                MediaSessionList.Children.Add(panel.RootElement);
+            }
+        }
+
+        TrackCountText.Text = $"{sessions.Count} session{(sessions.Count != 1 ? "s" : "")}";
+    }
+
+    private void UpdateMediaTimer()
+    {
+        bool needsTimer = _viewMode == ViewMode.MediaControl && _mediaSessionPanels.Count > 0;
+        if (needsTimer && _mediaTickTimer == null)
+        {
+            _mediaTickTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _mediaTickTimer.Tick += (_, _) =>
+            {
+                foreach (var panel in _mediaSessionPanels.Values)
+                    panel.UpdateTimeline();
+            };
+            _mediaTickTimer.Start();
+        }
+        else if (!needsTimer && _mediaTickTimer != null)
+        {
+            _mediaTickTimer.Stop();
+            _mediaTickTimer = null;
+        }
+    }
+
+    private void UpdateSpectrumTimer()
+    {
+        bool needsTimer = _viewMode == ViewMode.Visualizer;
+        if (needsTimer && _spectrumTimer == null)
+        {
+            PrepareSpectrumForCurrentTrack();
+            int ms = _vizFps >= 60 ? 16 : 33;
+            _spectrumTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
+            _spectrumTimer.Tick += (_, _) =>
+            {
+                if (_viewMode == ViewMode.Visualizer)
+                    DrawVisualization();
+            };
+            _spectrumTimer.Start();
+        }
+        else if (!needsTimer && _spectrumTimer != null)
+        {
+            _spectrumTimer.Stop();
+            _spectrumTimer = null;
+            _vizBandCount = 0;
+            _vizNoTrackText = null;
+        }
+    }
+
+    public void ApplyVisualizerFps(int fps)
+    {
+        _vizFps = fps;
+        if (_spectrumTimer != null)
+        {
+            _spectrumTimer.Stop();
+            _spectrumTimer = null;
+            UpdateSpectrumTimer();
+        }
+    }
+
+    private async void PrepareSpectrumForCurrentTrack()
+    {
+        var track = _player.CurrentTrack;
+        if (track != null)
+            await _spectrum.PrepareAsync(track.Path);
+    }
+
+    private void DrawVisualization()
+    {
+        var w = WaveformContainer.ActualWidth;
+        var h = WaveformContainer.ActualHeight;
+        if (w <= 0 || h <= 0) return;
+
+        if (_player.CurrentTrack == null)
+        {
+            // Show "no track" only if not already shown
+            if (_vizNoTrackText == null)
+            {
+                WaveformCanvas.Children.Clear();
+                _vizBandCount = 0;
+                _vizNoTrackText = new TextBlock
+                {
+                    Text = "No track playing", FontSize = 13,
+                    Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+                };
+                Canvas.SetLeft(_vizNoTrackText, w / 2 - 50);
+                Canvas.SetTop(_vizNoTrackText, h / 2 - 10);
+                WaveformCanvas.Children.Add(_vizNoTrackText);
+            }
+            return;
+        }
+        _vizNoTrackText = null;
+
+        double barW = 4, gap = 2, step = barW + gap;
+        int bandCount = Math.Max(1, (int)(w / step));
+        double ox = (w - bandCount * step) / 2;
+        double centerY = h / 2, halfMax = h * 0.44;
+
+        // Rebuild bars only when band count changes (window resize)
+        if (bandCount != _vizBandCount)
+        {
+            WaveformCanvas.Children.Clear();
+            _vizBandCount = bandCount;
+
+            var accent = ThemeHelper.Brush("AccentFillColorDefaultBrush");
+            var accentDim = ThemeHelper.Brush("AccentFillColorSecondaryBrush");
+
+            for (int i = 0; i < bandCount; i++)
+            {
+                double x = ox + i * step;
+
+                var upper = new Microsoft.UI.Xaml.Shapes.Rectangle
+                {
+                    Width = barW, Height = 2,
+                    RadiusX = 2, RadiusY = 2,
+                    Fill = accent
+                };
+                Canvas.SetLeft(upper, x);
+                Canvas.SetTop(upper, centerY - 2);
+                WaveformCanvas.Children.Add(upper);
+
+                var lower = new Microsoft.UI.Xaml.Shapes.Rectangle
+                {
+                    Width = barW, Height = 2,
+                    RadiusX = 2, RadiusY = 2,
+                    Fill = accentDim,
+                    Opacity = 0.4
+                };
+                Canvas.SetLeft(lower, x);
+                Canvas.SetTop(lower, centerY + 2);
+                WaveformCanvas.Children.Add(lower);
+            }
+        }
+
+        // Update existing bar heights/positions — no allocation
+        var bands = _spectrum.GetSpectrum(_player.Position, bandCount);
+
+        for (int i = 0; i < bandCount && i < bands.Length; i++)
+        {
+            double bh = 2 + bands[i] * (halfMax - 2);
+
+            var upper = (Microsoft.UI.Xaml.Shapes.Rectangle)WaveformCanvas.Children[i * 2];
+            upper.Height = bh;
+            Canvas.SetTop(upper, centerY - bh);
+
+            var lower = (Microsoft.UI.Xaml.Shapes.Rectangle)WaveformCanvas.Children[i * 2 + 1];
+            lower.Height = bh * 0.6;
+        }
+    }
+
+    private void WaveformContainer_SizeChanged(object sender, SizeChangedEventArgs e) { }
+
+    private void WaveformCanvas_PointerPressed(object sender, PointerRoutedEventArgs e) { }
 
     private void BuildQueueView()
     {
@@ -1457,9 +2215,31 @@ public sealed partial class MainWindow : Window
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
+        // Visualizer FPS
+        panel.Children.Add(ActionPanel.CreateSectionHeader("Visualizer"));
+
+        void AddFpsOption(int fps, string label)
+        {
+            var isActive = _vizFps == fps;
+            panel.Children.Add(ActionPanel.CreateButton(
+                isActive ? "\uE73E" : "\uE8D7", label, [], () =>
+            {
+                ApplyVisualizerFps(fps);
+                var s = SettingsManager.Load();
+                SettingsManager.Save(s with { VisualizerFps = fps });
+                flyout.Hide();
+            }, isActive: isActive));
+        }
+
+        AddFpsOption(30, "30 FPS");
+        AddFpsOption(60, "60 FPS");
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
         // Toggle actions
         panel.Children.Add(ActionPanel.CreateButton("\uE73F",
-            _isCollapsed ? "Expand" : "Compact Mode",
+            _collapseState == CollapseState.Expanded ? "Compact Mode" :
+            _collapseState == CollapseState.Compact ? "Mini Player" : "Expand",
             ["Ctrl", "L"], () =>
         {
             flyout.Hide();
@@ -1544,28 +2324,84 @@ public sealed partial class MainWindow : Window
 
     private void ToggleCollapse()
     {
-        _isCollapsed = !_isCollapsed;
-        _targetHeight = _isCollapsed ? _collapsedHeight : _expandedHeight;
+        // Cycle: Expanded → Compact → Mini → Expanded
+        _collapseState = _collapseState switch
+        {
+            CollapseState.Expanded => CollapseState.Compact,
+            CollapseState.Compact => CollapseState.Mini,
+            CollapseState.Mini => CollapseState.Expanded,
+            _ => CollapseState.Expanded
+        };
+
+        _targetHeight = _collapseState switch
+        {
+            CollapseState.Mini => _miniHeight,
+            CollapseState.Compact => _collapsedHeight,
+            _ => _expandedHeight
+        };
+
         _currentAnimHeight = AppWindow.Size.Height;
 
-        // Keep bottom edge fixed: adjust Y so top moves instead
+        // Keep bottom edge fixed
         _animStartY = AppWindow.Position.Y;
         var bottomEdge = _animStartY + AppWindow.Size.Height;
         _targetY = bottomEdge - _targetHeight;
 
-        // Update collapse/expand icon
-        CollapseIcon.Glyph = _isCollapsed ? "\uE740" : "\uE73F";
-        ToolTipService.SetToolTip(CollapseButton, _isCollapsed ? "Expand (Ctrl+L)" : "Compact (Ctrl+L)");
+        // Update icon and tooltip
+        CollapseIcon.Glyph = _collapseState switch
+        {
+            CollapseState.Expanded => "\uE73F",
+            CollapseState.Compact => "\uE73F",
+            CollapseState.Mini => "\uE740",
+            _ => "\uE73F"
+        };
+        ToolTipService.SetToolTip(CollapseButton, _collapseState switch
+        {
+            CollapseState.Expanded => "Compact (Ctrl+L)",
+            CollapseState.Compact => "Mini (Ctrl+L)",
+            CollapseState.Mini => "Expand (Ctrl+L)",
+            _ => "Compact (Ctrl+L)"
+        });
 
         // Show elements before expanding animation
-        if (!_isCollapsed)
+        if (_collapseState == CollapseState.Expanded)
         {
+            NowPlayingCard.Visibility = Visibility.Visible;
+            MiniPlayerBar.Visibility = Visibility.Collapsed;
             VolumeRow.Visibility = Visibility.Visible;
             NavRow.Visibility = Visibility.Visible;
             SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail)
                 ? Visibility.Visible : Visibility.Collapsed;
-            TrackListView.Visibility = Visibility.Visible;
+            TrackListView.Visibility = _viewMode != ViewMode.Visualizer && _viewMode != ViewMode.MediaControl
+                ? Visibility.Visible : Visibility.Collapsed;
+            WaveformContainer.Visibility = _viewMode == ViewMode.Visualizer
+                ? Visibility.Visible : Visibility.Collapsed;
+            MediaContainer.Visibility = _viewMode == ViewMode.MediaControl
+                ? Visibility.Visible : Visibility.Collapsed;
             BottomBar.Visibility = Visibility.Visible;
+            CustomTitleBar.Visibility = Visibility.Visible;
+        }
+        else if (_collapseState == CollapseState.Compact)
+        {
+            NowPlayingCard.Visibility = Visibility.Visible;
+            MiniPlayerBar.Visibility = Visibility.Collapsed;
+            CustomTitleBar.Visibility = Visibility.Visible;
+        }
+        else if (_collapseState == CollapseState.Mini)
+        {
+            // Hide everything immediately before animation
+            CustomTitleBar.Visibility = Visibility.Collapsed;
+            NowPlayingCard.Visibility = Visibility.Collapsed;
+            VolumeRow.Visibility = Visibility.Collapsed;
+            NavRow.Visibility = Visibility.Collapsed;
+            SearchSortRow.Visibility = Visibility.Collapsed;
+            TrackListView.Visibility = Visibility.Collapsed;
+            WaveformContainer.Visibility = Visibility.Collapsed;
+            MediaContainer.Visibility = Visibility.Collapsed;
+            BottomBar.Visibility = Visibility.Collapsed;
+            MiniPlayerBar.Visibility = Visibility.Visible;
+            UpdateMiniPlayer(_queue.CurrentTrack);
+            MiniPlayPauseIcon.Glyph = _player.IsPlaying ? "\uE769" : "\uE768";
         }
 
         _animTimer?.Stop();
@@ -1584,27 +2420,40 @@ public sealed partial class MainWindow : Window
             _animTimer?.Stop();
             _animTimer = null;
 
-            // Hide elements after collapsing animation
-            if (_isCollapsed)
+            // Set final visibility based on collapse state
+            if (_collapseState == CollapseState.Compact)
             {
                 VolumeRow.Visibility = Visibility.Collapsed;
                 NavRow.Visibility = Visibility.Collapsed;
                 SearchSortRow.Visibility = Visibility.Collapsed;
                 TrackListView.Visibility = Visibility.Collapsed;
+                WaveformContainer.Visibility = Visibility.Collapsed;
+                MediaContainer.Visibility = Visibility.Collapsed;
                 BottomBar.Visibility = Visibility.Collapsed;
+                MiniPlayerBar.Visibility = Visibility.Collapsed;
+                NowPlayingCard.Visibility = Visibility.Visible;
+            }
+            else if (_collapseState == CollapseState.Mini)
+            {
+                CustomTitleBar.Visibility = Visibility.Collapsed;
+                NowPlayingCard.Visibility = Visibility.Collapsed;
+                VolumeRow.Visibility = Visibility.Collapsed;
+                NavRow.Visibility = Visibility.Collapsed;
+                SearchSortRow.Visibility = Visibility.Collapsed;
+                TrackListView.Visibility = Visibility.Collapsed;
+                WaveformContainer.Visibility = Visibility.Collapsed;
+                MediaContainer.Visibility = Visibility.Collapsed;
+                BottomBar.Visibility = Visibility.Collapsed;
+                MiniPlayerBar.Visibility = Visibility.Visible;
             }
 
-            // Snap to final position
             AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(
                 AppWindow.Position.X, _targetY,
                 AppWindow.Size.Width, _currentAnimHeight));
         }
         else
         {
-            // Ease-out: move a fraction of remaining distance each frame
             _currentAnimHeight += (int)(diff * 0.18);
-
-            // Move Y so bottom edge stays fixed
             var newY = _targetY + (_targetHeight - _currentAnimHeight);
             AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(
                 AppWindow.Position.X, newY,
@@ -1673,8 +2522,31 @@ public sealed partial class MainWindow : Window
 
     private void RootGrid_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        ShowSettingsFlyout(sender as FrameworkElement ?? RootGrid);
+        if (_collapseState == CollapseState.Mini)
+        {
+            ShowMiniContextMenu(sender as FrameworkElement ?? RootGrid);
+        }
+        else
+        {
+            ShowSettingsFlyout(sender as FrameworkElement ?? RootGrid);
+        }
         e.Handled = true;
+    }
+
+    private void ShowMiniContextMenu(FrameworkElement anchor)
+    {
+        var flyout = new Flyout();
+        flyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle(minWidth: 140, maxWidth: 180);
+
+        var panel = new StackPanel { Spacing = 0 };
+        panel.Children.Add(ActionPanel.CreateButton("\uE740", "Expand", ["Ctrl", "L"], () =>
+        {
+            flyout.Hide();
+            ToggleCollapse();
+        }));
+
+        flyout.Content = panel;
+        flyout.ShowAt(anchor);
     }
 
     private void Pin_Click(object sender, RoutedEventArgs e)
@@ -1716,6 +2588,7 @@ public sealed partial class MainWindow : Window
         {
             ShowWindow(_hwnd, 0); // Hide to tray
             _isVisible = false;
+            SuspendTimers();
         }
     }
 
@@ -1756,13 +2629,28 @@ public sealed partial class MainWindow : Window
         {
             ShowWindow(_hwnd, 0); // SW_HIDE
             _isVisible = false;
+            SuspendTimers();
         }
         else
         {
             ShowWindow(_hwnd, 5); // SW_SHOW
             SetForegroundWindow(_hwnd);
             _isVisible = true;
+            ResumeTimers();
         }
+    }
+
+    private void SuspendTimers()
+    {
+        _player.SuspendPositionTimer();
+        _spectrumTimer?.Stop();
+    }
+
+    private void ResumeTimers()
+    {
+        _player.ResumePositionTimer();
+        if (_viewMode == ViewMode.Visualizer)
+            _spectrumTimer?.Start();
     }
 
     private void AddTrayIcon()
