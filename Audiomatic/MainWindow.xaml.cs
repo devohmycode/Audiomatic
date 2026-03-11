@@ -10,6 +10,8 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 
@@ -26,13 +28,20 @@ public sealed partial class MainWindow : Window
     private string _sortBy = "title";
     private bool _sortAscending = true;
 
+    // Playlist navigation
+    private enum ViewMode { Library, PlaylistList, PlaylistDetail, Queue }
+    private ViewMode _viewMode = ViewMode.Library;
+    private PlaylistInfo? _currentPlaylist;
+
     // Collapse animation
     private bool _isCollapsed;
-    private readonly int _expandedHeight = 680;
+    private readonly int _expandedHeight = 710;
     private readonly int _collapsedHeight = 220;
     private DispatcherTimer? _animTimer;
     private int _targetHeight;
     private int _currentAnimHeight;
+    private int _animStartY;
+    private int _targetY;
 
     // Window drag
     private bool _isDragging;
@@ -126,8 +135,9 @@ public sealed partial class MainWindow : Window
         // Restore window position (default: bottom-right)
         RestoreWindowPosition();
 
-        // Apply backdrop
+        // Apply backdrop and theme
         ApplyBackdrop(SettingsManager.LoadBackdrop());
+        ApplyTheme(SettingsManager.LoadTheme());
 
         // Set up audio player
         _player.SetDispatcherQueue(DispatcherQueue);
@@ -148,6 +158,7 @@ public sealed partial class MainWindow : Window
         // Initialize library and load tracks
         LibraryManager.Initialize();
         LoadTracks();
+        UpdateNavigation();
 
         // Restore queue state
         _queue.LoadState(_allTracks);
@@ -159,7 +170,7 @@ public sealed partial class MainWindow : Window
         // Restore shuffle/repeat
         _queue.Shuffle = settings.ShuffleEnabled;
         if (settings.ShuffleEnabled)
-            ShuffleIcon.Foreground = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"];
+            ShuffleIcon.Foreground = ThemeHelper.Brush("AccentTextFillColorPrimaryBrush");
 
         if (Enum.TryParse<RepeatMode>(settings.RepeatMode, true, out var rm))
         {
@@ -213,34 +224,55 @@ public sealed partial class MainWindow : Window
 
     private void ApplyFilterAndSort()
     {
+        if (_viewMode == ViewMode.PlaylistList)
+        {
+            LoadPlaylistList();
+            return;
+        }
+
+        if (_viewMode == ViewMode.Queue)
+        {
+            BuildQueueView();
+            return;
+        }
+
+        List<TrackInfo> source = _viewMode == ViewMode.PlaylistDetail && _currentPlaylist != null
+            ? LibraryManager.GetPlaylistTracks(_currentPlaylist.Id)
+            : _allTracks;
+
         var query = SearchBox.Text?.Trim() ?? "";
         _displayedTracks = string.IsNullOrEmpty(query)
-            ? [.. _allTracks]
-            : _allTracks.Where(t =>
+            ? [.. source]
+            : source.Where(t =>
                 t.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 t.Artist.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 t.Album.Contains(query, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-        // Sort
-        _displayedTracks = _sortBy switch
+        // Sort (only in library mode; playlists keep their order)
+        if (_viewMode == ViewMode.Library)
         {
-            "artist" => _sortAscending
-                ? [.. _displayedTracks.OrderBy(t => t.Artist).ThenBy(t => t.Album).ThenBy(t => t.TrackNumber)]
-                : [.. _displayedTracks.OrderByDescending(t => t.Artist).ThenByDescending(t => t.Album).ThenByDescending(t => t.TrackNumber)],
-            "album" => _sortAscending
-                ? [.. _displayedTracks.OrderBy(t => t.Album).ThenBy(t => t.TrackNumber)]
-                : [.. _displayedTracks.OrderByDescending(t => t.Album).ThenByDescending(t => t.TrackNumber)],
-            "duration" => _sortAscending
-                ? [.. _displayedTracks.OrderBy(t => t.DurationMs)]
-                : [.. _displayedTracks.OrderByDescending(t => t.DurationMs)],
-            _ => _sortAscending
-                ? [.. _displayedTracks.OrderBy(t => t.Title)]
-                : [.. _displayedTracks.OrderByDescending(t => t.Title)]
-        };
+            _displayedTracks = _sortBy switch
+            {
+                "artist" => _sortAscending
+                    ? [.. _displayedTracks.OrderBy(t => t.Artist).ThenBy(t => t.Album).ThenBy(t => t.TrackNumber)]
+                    : [.. _displayedTracks.OrderByDescending(t => t.Artist).ThenByDescending(t => t.Album).ThenByDescending(t => t.TrackNumber)],
+                "album" => _sortAscending
+                    ? [.. _displayedTracks.OrderBy(t => t.Album).ThenBy(t => t.TrackNumber)]
+                    : [.. _displayedTracks.OrderByDescending(t => t.Album).ThenByDescending(t => t.TrackNumber)],
+                "duration" => _sortAscending
+                    ? [.. _displayedTracks.OrderBy(t => t.DurationMs)]
+                    : [.. _displayedTracks.OrderByDescending(t => t.DurationMs)],
+                _ => _sortAscending
+                    ? [.. _displayedTracks.OrderBy(t => t.Title)]
+                    : [.. _displayedTracks.OrderByDescending(t => t.Title)]
+            };
+        }
 
         RebuildTrackList();
-        TrackCountText.Text = $"{_allTracks.Count:N0} tracks";
+        TrackCountText.Text = _viewMode == ViewMode.Library
+            ? $"{_allTracks.Count:N0} tracks"
+            : $"{_displayedTracks.Count:N0} tracks";
     }
 
     private void RebuildTrackList()
@@ -249,15 +281,21 @@ public sealed partial class MainWindow : Window
         var scrollViewer = FindScrollViewer(TrackListView);
         var scrollOffset = scrollViewer?.VerticalOffset ?? 0;
 
+        var isPlaylistDetail = _viewMode == ViewMode.PlaylistDetail;
+
+        TrackListView.CanReorderItems = false;
         TrackListView.Items.Clear();
-        foreach (var track in _displayedTracks)
+        for (int i = 0; i < _displayedTracks.Count; i++)
         {
+            var track = _displayedTracks[i];
             var isPlaying = _queue.CurrentTrack?.Id == track.Id;
 
             var grid = new Grid { Padding = new Thickness(2, 4, 2, 4), ColumnSpacing = 8 };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            if (isPlaylistDetail)
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             // Speaker icon or music note
             var icon = new FontIcon
@@ -265,8 +303,8 @@ public sealed partial class MainWindow : Window
                 Glyph = isPlaying ? "\uE767" : "\uE8D6",
                 FontSize = 12,
                 Foreground = isPlaying
-                    ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-                    : (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+                    ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                    : ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 VerticalAlignment = VerticalAlignment.Center,
                 Width = 16
             };
@@ -282,8 +320,8 @@ public sealed partial class MainWindow : Window
                     ? Microsoft.UI.Text.FontWeights.SemiBold
                     : Microsoft.UI.Text.FontWeights.Normal,
                 Foreground = isPlaying
-                    ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-                    : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
+                    ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                    : ThemeHelper.Brush("TextFillColorPrimaryBrush"),
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxLines = 1
             });
@@ -298,7 +336,7 @@ public sealed partial class MainWindow : Window
                 {
                     Text = string.Join(" \u00B7 ", subtitle),
                     FontSize = 11,
-                    Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                    Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
                     TextTrimming = TextTrimming.CharacterEllipsis,
                     MaxLines = 1
                 });
@@ -310,7 +348,7 @@ public sealed partial class MainWindow : Window
             {
                 Text = track.DurationFormatted,
                 FontSize = 11,
-                Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 VerticalAlignment = VerticalAlignment.Center
             };
             Grid.SetColumn(dur, 2);
@@ -318,7 +356,72 @@ public sealed partial class MainWindow : Window
             grid.Children.Add(icon);
             grid.Children.Add(info);
             grid.Children.Add(dur);
+
+            // Reorder Up/Down buttons for playlist detail
+            if (isPlaylistDetail && _currentPlaylist != null)
+            {
+                var reorderPanel = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 0 };
+                if (i > 0)
+                {
+                    var fromIdx = i;
+                    var playlistId = _currentPlaylist.Id;
+                    var upBtn = new Button
+                    {
+                        Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                        BorderThickness = new Thickness(0),
+                        Padding = new Thickness(4, 1, 4, 1),
+                        MinHeight = 0, MinWidth = 0,
+                        Content = new FontIcon
+                        {
+                            Glyph = "\uE74A", FontSize = 9,
+                            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+                        }
+                    };
+                    upBtn.Click += (_, _) =>
+                    {
+                        LibraryManager.MoveTrackInPlaylist(playlistId, fromIdx, fromIdx - 1);
+                        ApplyFilterAndSort();
+                    };
+                    reorderPanel.Children.Add(upBtn);
+                }
+                if (i < _displayedTracks.Count - 1)
+                {
+                    var fromIdx = i;
+                    var playlistId = _currentPlaylist.Id;
+                    var downBtn = new Button
+                    {
+                        Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                        BorderThickness = new Thickness(0),
+                        Padding = new Thickness(4, 1, 4, 1),
+                        MinHeight = 0, MinWidth = 0,
+                        Content = new FontIcon
+                        {
+                            Glyph = "\uE74B", FontSize = 9,
+                            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+                        }
+                    };
+                    downBtn.Click += (_, _) =>
+                    {
+                        LibraryManager.MoveTrackInPlaylist(playlistId, fromIdx, fromIdx + 1);
+                        ApplyFilterAndSort();
+                    };
+                    reorderPanel.Children.Add(downBtn);
+                }
+                Grid.SetColumn(reorderPanel, 3);
+                grid.Children.Add(reorderPanel);
+            }
+
             grid.Tag = track;
+
+            // Context menu (Raycast style)
+            var ctxFlyout = new Flyout();
+            ctxFlyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle();
+            var capturedTrack = track;
+            ctxFlyout.Opening += (_, _) =>
+            {
+                ctxFlyout.Content = BuildTrackContextContent(ctxFlyout, capturedTrack);
+            };
+            grid.ContextFlyout = ctxFlyout;
 
             TrackListView.Items.Add(grid);
         }
@@ -402,7 +505,11 @@ public sealed partial class MainWindow : Window
         TrackAlbum.Text = track.Album;
         PlayPauseIcon.Glyph = "\uE769"; // Pause icon
         LoadAlbumArt(track.Path);
-        RebuildTrackList(); // Re-highlight current track
+        // Re-highlight current track in the appropriate view
+        if (_viewMode == ViewMode.Queue)
+            BuildQueueView();
+        else if (_viewMode != ViewMode.PlaylistList)
+            RebuildTrackList();
     }
 
     private async void LoadAlbumArt(string filePath)
@@ -507,8 +614,8 @@ public sealed partial class MainWindow : Window
     {
         _queue.Shuffle = !_queue.Shuffle;
         ShuffleIcon.Foreground = _queue.Shuffle
-            ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-            : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+            ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+            : ThemeHelper.Brush("TextFillColorPrimaryBrush");
     }
 
     private void Repeat_Click(object sender, RoutedEventArgs e)
@@ -527,8 +634,8 @@ public sealed partial class MainWindow : Window
     {
         RepeatIcon.Glyph = _queue.Repeat == RepeatMode.One ? "\uE8ED" : "\uE8EE";
         RepeatIcon.Foreground = _queue.Repeat != RepeatMode.None
-            ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
-            : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+            ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+            : ThemeHelper.Brush("TextFillColorPrimaryBrush");
     }
 
     // -- Timeline -------------------------------------------------
@@ -598,24 +705,647 @@ public sealed partial class MainWindow : Window
 
     private async void TrackList_ItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is Grid grid && grid.Tag is TrackInfo track)
+        if (e.ClickedItem is not Grid grid) return;
+
+        // Playlist item clicked — open detail view
+        if (grid.Tag is PlaylistInfo playlist)
         {
-            // Find index in displayed tracks
+            _currentPlaylist = playlist;
+            _viewMode = ViewMode.PlaylistDetail;
+            UpdateNavigation();
+            ApplyFilterAndSort();
+            return;
+        }
+
+        if (grid.Tag is TrackInfo track)
+        {
+            // Queue item — play at index without resetting queue
+            if (_viewMode == ViewMode.Queue)
+            {
+                for (int i = 0; i < TrackListView.Items.Count; i++)
+                {
+                    if (ReferenceEquals(TrackListView.Items[i], grid))
+                    {
+                        var t = _queue.PlayIndex(i);
+                        if (t != null)
+                        {
+                            try { await _player.PlayTrackAsync(t); }
+                            catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
+                            UpdateNowPlaying(t);
+                        }
+                        return;
+                    }
+                }
+                return;
+            }
+
+            // Library/playlist track — set queue and play
             var idx = _displayedTracks.FindIndex(t => t.Id == track.Id);
             if (idx < 0) return;
 
-            // Set the displayed list as the queue
             _queue.SetQueue(_displayedTracks, idx);
-            try
-            {
-                await _player.PlayTrackAsync(track);
-            }
-            catch (Exception ex)
-            {
-                TrackArtist.Text = $"Error: {ex.Message}";
-            }
+            try { await _player.PlayTrackAsync(track); }
+            catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
             UpdateNowPlaying(track);
         }
+    }
+
+    // -- Playlists ------------------------------------------------
+
+    private void NavLibrary_Click(object sender, RoutedEventArgs e)
+    {
+        _viewMode = ViewMode.Library;
+        _currentPlaylist = null;
+        UpdateNavigation();
+        ApplyFilterAndSort();
+    }
+
+    private void NavPlaylists_Click(object sender, RoutedEventArgs e)
+    {
+        _viewMode = ViewMode.PlaylistList;
+        _currentPlaylist = null;
+        UpdateNavigation();
+        LoadPlaylistList();
+    }
+
+    private void NavBack_Click(object sender, RoutedEventArgs e)
+    {
+        NavPlaylists_Click(sender, e);
+    }
+
+    private async void NewPlaylist_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ContentDialog
+        {
+            Title = "New Playlist",
+            PrimaryButtonText = "Create",
+            CloseButtonText = "Cancel",
+            XamlRoot = Content.XamlRoot
+        };
+        var input = new TextBox { PlaceholderText = "Playlist name" };
+        dialog.Content = input;
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary
+            && !string.IsNullOrWhiteSpace(input.Text))
+        {
+            LibraryManager.CreatePlaylist(input.Text.Trim());
+            if (_viewMode == ViewMode.PlaylistList)
+                LoadPlaylistList();
+        }
+    }
+
+    private void UpdateNavigation()
+    {
+        // Toggle tab bar vs playlist detail header
+        NavTabs.Visibility = _viewMode != ViewMode.PlaylistDetail
+            ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistHeader.Visibility = _viewMode == ViewMode.PlaylistDetail
+            ? Visibility.Visible : Visibility.Collapsed;
+        NewPlaylistBtn.Visibility = _viewMode == ViewMode.PlaylistList
+            ? Visibility.Visible : Visibility.Collapsed;
+        ClearQueueBtn.Visibility = _viewMode == ViewMode.Queue
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        // Highlight active tabs
+        void SetTab(TextBlock tb, bool active)
+        {
+            tb.FontWeight = active
+                ? Microsoft.UI.Text.FontWeights.SemiBold
+                : Microsoft.UI.Text.FontWeights.Normal;
+            tb.Foreground = active
+                ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                : ThemeHelper.Brush("TextFillColorPrimaryBrush");
+        }
+        SetTab(NavLibraryText, _viewMode == ViewMode.Library);
+        SetTab(NavPlaylistsText, _viewMode == ViewMode.PlaylistList);
+        SetTab(NavQueueText, _viewMode == ViewMode.Queue);
+
+        // Show/hide search & sort
+        SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail)
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        // Playlist detail name
+        if (_currentPlaylist != null)
+            PlaylistNameText.Text = _currentPlaylist.Name;
+    }
+
+    private void LoadPlaylistList()
+    {
+        TrackListView.CanReorderItems = false;
+        var playlists = LibraryManager.GetPlaylists();
+        TrackListView.Items.Clear();
+
+        foreach (var playlist in playlists)
+        {
+            var tracks = LibraryManager.GetPlaylistTracks(playlist.Id);
+
+            var grid = new Grid { Padding = new Thickness(2, 4, 2, 4), ColumnSpacing = 8 };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var icon = new FontIcon
+            {
+                Glyph = "\uE8FD",
+                FontSize = 14,
+                Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Width = 16
+            };
+            Grid.SetColumn(icon, 0);
+
+            var info = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 1 };
+            info.Children.Add(new TextBlock
+            {
+                Text = playlist.Name,
+                FontSize = 13,
+                Foreground = ThemeHelper.Brush("TextFillColorPrimaryBrush"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxLines = 1
+            });
+            info.Children.Add(new TextBlock
+            {
+                Text = $"{tracks.Count} track{(tracks.Count != 1 ? "s" : "")}",
+                FontSize = 11,
+                Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
+                MaxLines = 1
+            });
+            Grid.SetColumn(info, 1);
+
+            var chevron = new FontIcon
+            {
+                Glyph = "\uE76C",
+                FontSize = 11,
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(chevron, 2);
+
+            grid.Children.Add(icon);
+            grid.Children.Add(info);
+            grid.Children.Add(chevron);
+            grid.Tag = playlist;
+
+            // Context menu (Raycast style)
+            var plRef = playlist;
+            var ctxFlyout = new Flyout();
+            ctxFlyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle();
+            ctxFlyout.Opening += (_, _) =>
+            {
+                ctxFlyout.Content = BuildPlaylistContextContent(ctxFlyout, plRef);
+            };
+            grid.ContextFlyout = ctxFlyout;
+
+            TrackListView.Items.Add(grid);
+        }
+
+        TrackCountText.Text = $"{playlists.Count} playlist{(playlists.Count != 1 ? "s" : "")}";
+    }
+
+    private StackPanel BuildTrackContextContent(Flyout flyout, TrackInfo track)
+    {
+        var panel = new StackPanel { Spacing = 0 };
+
+        // Queue actions (not shown in Queue view itself)
+        if (_viewMode != ViewMode.Queue)
+        {
+            panel.Children.Add(ActionPanel.CreateButton("\uE768", "Play Next", [], () =>
+            {
+                flyout.Hide();
+                _queue.AddToQueueNext(track);
+            }));
+            panel.Children.Add(ActionPanel.CreateButton("\uE710", "Add to Queue", [], () =>
+            {
+                flyout.Hide();
+                _queue.AddToQueue(track);
+            }));
+            panel.Children.Add(ActionPanel.CreateSeparator());
+        }
+
+        // Add to Playlist section
+        panel.Children.Add(ActionPanel.CreateSectionHeader("Add to Playlist"));
+        foreach (var pl in LibraryManager.GetPlaylists())
+        {
+            var plId = pl.Id;
+            panel.Children.Add(ActionPanel.CreateButton("\uE8FD", pl.Name, [], () =>
+            {
+                flyout.Hide();
+                LibraryManager.AddTrackToPlaylist(plId, track.Id);
+                if (_viewMode == ViewMode.PlaylistDetail && _currentPlaylist?.Id == plId)
+                    ApplyFilterAndSort();
+            }));
+        }
+        panel.Children.Add(ActionPanel.CreateButton("\uE710", "New Playlist...", [], async () =>
+        {
+            flyout.Hide();
+            var dialog = new ContentDialog
+            {
+                Title = "New Playlist",
+                PrimaryButtonText = "Create",
+                CloseButtonText = "Cancel",
+                XamlRoot = Content.XamlRoot
+            };
+            var input = new TextBox { PlaceholderText = "Playlist name" };
+            dialog.Content = input;
+            if (await dialog.ShowAsync() == ContentDialogResult.Primary
+                && !string.IsNullOrWhiteSpace(input.Text))
+            {
+                var id = LibraryManager.CreatePlaylist(input.Text.Trim());
+                LibraryManager.AddTrackToPlaylist(id, track.Id);
+            }
+        }));
+
+        // Remove from playlist (playlist detail only)
+        if (_viewMode == ViewMode.PlaylistDetail && _currentPlaylist != null)
+        {
+            var currentPl = _currentPlaylist;
+            panel.Children.Add(ActionPanel.CreateSeparator());
+            panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Remove from Playlist", [], () =>
+            {
+                flyout.Hide();
+                LibraryManager.RemoveTrackFromPlaylist(currentPl.Id, track.Id);
+                ApplyFilterAndSort();
+            }, isDestructive: true));
+        }
+
+        return panel;
+    }
+
+    private StackPanel BuildPlaylistContextContent(Flyout flyout, PlaylistInfo playlist)
+    {
+        var panel = new StackPanel { Spacing = 0 };
+
+        panel.Children.Add(ActionPanel.CreateButton("\uE768", "Play", [], async () =>
+        {
+            flyout.Hide();
+            var tracks = LibraryManager.GetPlaylistTracks(playlist.Id);
+            if (tracks.Count > 0)
+            {
+                _queue.SetQueue(tracks, 0);
+                try { await _player.PlayTrackAsync(tracks[0]); }
+                catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
+                UpdateNowPlaying(tracks[0]);
+            }
+        }));
+        panel.Children.Add(ActionPanel.CreateButton("\uE8AC", "Rename", [], async () =>
+        {
+            flyout.Hide();
+            var dialog = new ContentDialog
+            {
+                Title = "Rename Playlist",
+                PrimaryButtonText = "Rename",
+                CloseButtonText = "Cancel",
+                XamlRoot = Content.XamlRoot
+            };
+            var input = new TextBox { Text = playlist.Name };
+            dialog.Content = input;
+            if (await dialog.ShowAsync() == ContentDialogResult.Primary
+                && !string.IsNullOrWhiteSpace(input.Text))
+            {
+                LibraryManager.RenamePlaylist(playlist.Id, input.Text.Trim());
+                LoadPlaylistList();
+            }
+        }));
+        panel.Children.Add(ActionPanel.CreateSeparator());
+        panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Delete", [], () =>
+        {
+            flyout.Hide();
+            LibraryManager.DeletePlaylist(playlist.Id);
+            LoadPlaylistList();
+        }, isDestructive: true));
+
+        return panel;
+    }
+
+    private StackPanel BuildQueueItemContextContent(Flyout flyout, TrackInfo track, int index)
+    {
+        var panel = new StackPanel { Spacing = 0 };
+
+        panel.Children.Add(ActionPanel.CreateButton("\uE768", "Play", [], async () =>
+        {
+            flyout.Hide();
+            var t = _queue.PlayIndex(index);
+            if (t != null)
+            {
+                try { await _player.PlayTrackAsync(t); }
+                catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
+                UpdateNowPlaying(t);
+            }
+        }));
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        if (index > 0)
+        {
+            panel.Children.Add(ActionPanel.CreateButton("\uE74A", "Move Up", [], () =>
+            {
+                flyout.Hide();
+                _queue.MoveInQueue(index, index - 1);
+                BuildQueueView();
+            }));
+        }
+        if (index < _queue.Queue.Count - 1)
+        {
+            panel.Children.Add(ActionPanel.CreateButton("\uE74B", "Move Down", [], () =>
+            {
+                flyout.Hide();
+                _queue.MoveInQueue(index, index + 1);
+                BuildQueueView();
+            }));
+        }
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Remove", [], () =>
+        {
+            flyout.Hide();
+            _queue.RemoveFromQueue(index);
+            BuildQueueView();
+        }, isDestructive: true));
+
+        panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Clear Queue", [], () =>
+        {
+            flyout.Hide();
+            _queue.Clear();
+            BuildQueueView();
+        }, isDestructive: true));
+
+        return panel;
+    }
+
+    // -- Queue view -----------------------------------------------
+
+    private void NavQueue_Click(object sender, RoutedEventArgs e)
+    {
+        _viewMode = ViewMode.Queue;
+        _currentPlaylist = null;
+        UpdateNavigation();
+        BuildQueueView();
+    }
+
+    private void ClearQueue_Click(object sender, RoutedEventArgs e)
+    {
+        _queue.Clear();
+        BuildQueueView();
+    }
+
+    private void BuildQueueView()
+    {
+        TrackListView.CanReorderItems = false;
+        TrackListView.Items.Clear();
+        var queue = _queue.Queue;
+
+        for (int i = 0; i < queue.Count; i++)
+        {
+            var track = queue[i];
+            var isCurrent = i == _queue.CurrentIndex;
+
+            var grid = new Grid { Padding = new Thickness(2, 4, 2, 4), ColumnSpacing = 6 };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });  // pos
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // info
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });  // duration
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });  // reorder
+
+            // Position number or speaker icon for current
+            FrameworkElement posElement;
+            if (isCurrent)
+            {
+                posElement = new FontIcon
+                {
+                    Glyph = "\uE767",
+                    FontSize = 12,
+                    Foreground = ThemeHelper.Brush("AccentTextFillColorPrimaryBrush"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Width = 20
+                };
+            }
+            else
+            {
+                posElement = new TextBlock
+                {
+                    Text = $"{i + 1}",
+                    FontSize = 11,
+                    Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Width = 20,
+                    TextAlignment = TextAlignment.Center
+                };
+            }
+            Grid.SetColumn(posElement, 0);
+
+            var info = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 1 };
+            info.Children.Add(new TextBlock
+            {
+                Text = track.Title,
+                FontSize = 13,
+                FontWeight = isCurrent
+                    ? Microsoft.UI.Text.FontWeights.SemiBold
+                    : Microsoft.UI.Text.FontWeights.Normal,
+                Foreground = isCurrent
+                    ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                    : ThemeHelper.Brush("TextFillColorPrimaryBrush"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxLines = 1
+            });
+
+            var subtitle = new List<string>();
+            if (!string.IsNullOrEmpty(track.Artist)) subtitle.Add(track.Artist);
+            if (!string.IsNullOrEmpty(track.Album)) subtitle.Add(track.Album);
+            if (subtitle.Count > 0)
+            {
+                info.Children.Add(new TextBlock
+                {
+                    Text = string.Join(" \u00B7 ", subtitle),
+                    FontSize = 11,
+                    Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    MaxLines = 1
+                });
+            }
+            Grid.SetColumn(info, 1);
+
+            var dur = new TextBlock
+            {
+                Text = track.DurationFormatted,
+                FontSize = 11,
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(dur, 2);
+
+            // Reorder Up/Down buttons
+            var reorderPanel = new StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                Spacing = 0
+            };
+            if (i > 0)
+            {
+                var fromIdx = i;
+                var upBtn = new Button
+                {
+                    Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                    BorderThickness = new Thickness(0),
+                    Padding = new Thickness(4, 1, 4, 1),
+                    MinHeight = 0,
+                    MinWidth = 0,
+                    Content = new FontIcon
+                    {
+                        Glyph = "\uE74A",
+                        FontSize = 9,
+                        Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+                    }
+                };
+                upBtn.Click += (_, _) =>
+                {
+                    _queue.MoveInQueue(fromIdx, fromIdx - 1);
+                    BuildQueueView();
+                };
+                reorderPanel.Children.Add(upBtn);
+            }
+            if (i < queue.Count - 1)
+            {
+                var fromIdx = i;
+                var downBtn = new Button
+                {
+                    Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                    BorderThickness = new Thickness(0),
+                    Padding = new Thickness(4, 1, 4, 1),
+                    MinHeight = 0,
+                    MinWidth = 0,
+                    Content = new FontIcon
+                    {
+                        Glyph = "\uE74B",
+                        FontSize = 9,
+                        Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+                    }
+                };
+                downBtn.Click += (_, _) =>
+                {
+                    _queue.MoveInQueue(fromIdx, fromIdx + 1);
+                    BuildQueueView();
+                };
+                reorderPanel.Children.Add(downBtn);
+            }
+            Grid.SetColumn(reorderPanel, 3);
+
+            grid.Children.Add(posElement);
+            grid.Children.Add(info);
+            grid.Children.Add(dur);
+            grid.Children.Add(reorderPanel);
+            grid.Tag = track;
+
+            // Context menu (Raycast style)
+            var capturedTrack = track;
+            var capturedGrid = grid;
+            var ctxFlyout = new Flyout();
+            ctxFlyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle();
+            ctxFlyout.Opening += (_, _) =>
+            {
+                int currentIdx = TrackListView.Items.IndexOf(capturedGrid);
+                ctxFlyout.Content = BuildQueueItemContextContent(ctxFlyout, capturedTrack, currentIdx);
+            };
+            grid.ContextFlyout = ctxFlyout;
+
+            TrackListView.Items.Add(grid);
+        }
+
+        TrackCountText.Text = $"{queue.Count} in queue";
+    }
+
+    private void TrackListView_DragItemsCompleted(ListViewBase sender, DragItemsCompletedEventArgs args)
+    {
+        if (_viewMode != ViewMode.Queue) return;
+
+        var newOrder = new List<TrackInfo>();
+        foreach (var item in TrackListView.Items)
+        {
+            if (item is Grid g && g.Tag is TrackInfo t)
+                newOrder.Add(t);
+        }
+
+        if (newOrder.Count > 0)
+            _queue.ReorderQueue(newOrder);
+    }
+
+    // -- Drag & drop from Explorer --------------------------------
+
+    private void RootGrid_DragOver(object sender, DragEventArgs e)
+    {
+        if (e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            e.AcceptedOperation = DataPackageOperation.Copy;
+            e.DragUIOverride.Caption = "Add to Queue";
+            e.DragUIOverride.IsCaptionVisible = true;
+        }
+    }
+
+    private async void RootGrid_Drop(object sender, DragEventArgs e)
+    {
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+
+        var items = await e.DataView.GetStorageItemsAsync();
+        var audioFiles = new List<string>();
+
+        foreach (var item in items)
+        {
+            if (item is StorageFile file)
+            {
+                var ext = Path.GetExtension(file.Path).ToLowerInvariant();
+                if (LibraryManager.AudioExtensions.Contains(ext))
+                    audioFiles.Add(file.Path);
+            }
+        }
+
+        if (audioFiles.Count == 0) return;
+
+        bool queueWasEmpty = _queue.Queue.Count == 0;
+
+        foreach (var filePath in audioFiles)
+        {
+            var track = ReadTrackMetadata(filePath);
+            if (track == null) continue;
+
+            if (queueWasEmpty && filePath == audioFiles[0])
+            {
+                // Empty queue — play directly
+                _queue.SetQueue([track], 0);
+                try { await _player.PlayTrackAsync(track); }
+                catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
+                UpdateNowPlaying(track);
+                queueWasEmpty = false;
+            }
+            else
+            {
+                _queue.AddToQueue(track);
+            }
+        }
+
+        if (_viewMode == ViewMode.Queue)
+            BuildQueueView();
+    }
+
+    private static TrackInfo? ReadTrackMetadata(string filePath)
+    {
+        try
+        {
+            using var tagFile = TagLib.File.Create(filePath);
+            return new TrackInfo
+            {
+                Id = -1,
+                Path = filePath,
+                Title = string.IsNullOrWhiteSpace(tagFile.Tag.Title)
+                    ? Path.GetFileNameWithoutExtension(filePath)
+                    : tagFile.Tag.Title.Trim(),
+                Artist = tagFile.Tag.FirstPerformer?.Trim() ?? "",
+                Album = tagFile.Tag.Album?.Trim() ?? "",
+                DurationMs = (int)tagFile.Properties.Duration.TotalMilliseconds,
+                TrackNumber = (int)tagFile.Tag.Track,
+                Year = (int)tagFile.Tag.Year,
+                Genre = tagFile.Tag.FirstGenre ?? ""
+            };
+        }
+        catch { return null; }
     }
 
     // -- Bottom bar -----------------------------------------------
@@ -667,6 +1397,18 @@ public sealed partial class MainWindow : Window
             flyout.Hide();
             ScanAllFoldersAsync();
         }));
+        panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Reset Library", [], () =>
+        {
+            flyout.Hide();
+            LibraryManager.ResetLibrary();
+            _allTracks.Clear();
+            _displayedTracks.Clear();
+            _queue.Clear();
+            _viewMode = ViewMode.Library;
+            _currentPlaylist = null;
+            UpdateNavigation();
+            ApplyFilterAndSort();
+        }, isDestructive: true));
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
@@ -690,6 +1432,28 @@ public sealed partial class MainWindow : Window
         AddBackdropOption("mica", "Mica");
         AddBackdropOption("mica_alt", "Mica Alt");
         AddBackdropOption("none", "None");
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        // Theme section
+        var currentTheme = SettingsManager.LoadTheme();
+        panel.Children.Add(ActionPanel.CreateSectionHeader("Theme"));
+
+        void AddThemeOption(string theme, string label)
+        {
+            var isActive = currentTheme == theme;
+            panel.Children.Add(ActionPanel.CreateButton(
+                isActive ? "\uE73E" : "\uE8D7", label, [], () =>
+            {
+                SettingsManager.SaveTheme(theme);
+                ApplyTheme(theme);
+                flyout.Hide();
+            }, isActive: isActive));
+        }
+
+        AddThemeOption("system", "System");
+        AddThemeOption("light", "Light");
+        AddThemeOption("dark", "Dark");
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
@@ -753,6 +1517,29 @@ public sealed partial class MainWindow : Window
         };
     }
 
+    private void ApplyTheme(string theme)
+    {
+        if (Content is FrameworkElement root)
+        {
+            var elementTheme = theme switch
+            {
+                "light" => ElementTheme.Light,
+                "dark" => ElementTheme.Dark,
+                _ => ElementTheme.Default
+            };
+            root.RequestedTheme = elementTheme;
+            ThemeHelper.CurrentTheme = elementTheme;
+
+            // Rebuild dynamic UI so code-behind elements pick up the new theme brushes
+            ApplyFilterAndSort();
+            UpdateNavigation();
+            UpdateRepeatIcon();
+            ShuffleIcon.Foreground = _queue.Shuffle
+                ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+                : ThemeHelper.Brush("TextFillColorPrimaryBrush");
+        }
+    }
+
     // -- Collapse animation ----------------------------------------
 
     private void ToggleCollapse()
@@ -760,6 +1547,11 @@ public sealed partial class MainWindow : Window
         _isCollapsed = !_isCollapsed;
         _targetHeight = _isCollapsed ? _collapsedHeight : _expandedHeight;
         _currentAnimHeight = AppWindow.Size.Height;
+
+        // Keep bottom edge fixed: adjust Y so top moves instead
+        _animStartY = AppWindow.Position.Y;
+        var bottomEdge = _animStartY + AppWindow.Size.Height;
+        _targetY = bottomEdge - _targetHeight;
 
         // Update collapse/expand icon
         CollapseIcon.Glyph = _isCollapsed ? "\uE740" : "\uE73F";
@@ -769,7 +1561,9 @@ public sealed partial class MainWindow : Window
         if (!_isCollapsed)
         {
             VolumeRow.Visibility = Visibility.Visible;
-            SearchSortRow.Visibility = Visibility.Visible;
+            NavRow.Visibility = Visibility.Visible;
+            SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail)
+                ? Visibility.Visible : Visibility.Collapsed;
             TrackListView.Visibility = Visibility.Visible;
             BottomBar.Visibility = Visibility.Visible;
         }
@@ -794,18 +1588,28 @@ public sealed partial class MainWindow : Window
             if (_isCollapsed)
             {
                 VolumeRow.Visibility = Visibility.Collapsed;
+                NavRow.Visibility = Visibility.Collapsed;
                 SearchSortRow.Visibility = Visibility.Collapsed;
                 TrackListView.Visibility = Visibility.Collapsed;
                 BottomBar.Visibility = Visibility.Collapsed;
             }
+
+            // Snap to final position
+            AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(
+                AppWindow.Position.X, _targetY,
+                AppWindow.Size.Width, _currentAnimHeight));
         }
         else
         {
             // Ease-out: move a fraction of remaining distance each frame
             _currentAnimHeight += (int)(diff * 0.18);
-        }
 
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(AppWindow.Size.Width, _currentAnimHeight));
+            // Move Y so bottom edge stays fixed
+            var newY = _targetY + (_targetHeight - _currentAnimHeight);
+            AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(
+                AppWindow.Position.X, newY,
+                AppWindow.Size.Width, _currentAnimHeight));
+        }
     }
 
     // -- Window chrome --------------------------------------------

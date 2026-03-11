@@ -18,6 +18,7 @@ public record AppSettings(
     string SortBy,      // "title", "artist", "album", "duration", "added"
     bool SortAscending,
     string Language,     // "fr", "en"
+    string Theme = "system",  // "system", "light", "dark"
     int? WindowX = null,
     int? WindowY = null);
 
@@ -65,6 +66,14 @@ public static class SettingsManager
     {
         var current = Load();
         Save(current with { Backdrop = backdrop });
+    }
+
+    public static string LoadTheme() => Load().Theme ?? "system";
+
+    public static void SaveTheme(string theme)
+    {
+        var current = Load();
+        Save(current with { Theme = theme });
     }
 
     private static AppSettings CreateDefault() => new(
