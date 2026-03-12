@@ -20,6 +20,10 @@ public record AppSettings(
     string Language,     // "fr", "en"
     string Theme = "system",  // "system", "light", "dark"
     int VisualizerFps = 30,
+    string VisualizerMode = "classic",  // "classic", "bars", "circle", "wave"
+    string VisualizerColor = "",        // hex string, empty = system accent
+    bool VisualizerGlow = true,
+    bool VisualizerDarkBg = false,
     int? WindowX = null,
     int? WindowY = null);
 

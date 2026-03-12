@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Audiomatic.Models;
 using Audiomatic.Services;
+using Audiomatic.Visualizer;
 using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
@@ -42,6 +43,7 @@ public sealed partial class MainWindow : Window
     private int _vizFps = 30;
     private int _vizBandCount;  // tracks current bar count for reuse
     private TextBlock? _vizNoTrackText;
+    private VisualizerRenderer? _vizRenderer;
 
     // View transition animation
     private bool _isViewTransitioning;
@@ -1725,25 +1727,71 @@ public sealed partial class MainWindow : Window
 
     private void UpdateSpectrumTimer()
     {
-        bool needsTimer = _viewMode == ViewMode.Visualizer;
-        if (needsTimer && _spectrumTimer == null)
+        bool needsViz = _viewMode == ViewMode.Visualizer;
+
+        if (needsViz)
         {
             PrepareSpectrumForCurrentTrack();
-            int ms = _vizFps >= 60 ? 16 : 33;
-            _spectrumTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
-            _spectrumTimer.Tick += (_, _) =>
+
+            // Initialize renderer once
+            if (_vizRenderer == null)
             {
-                if (_viewMode == ViewMode.Visualizer)
-                    DrawVisualization();
-            };
-            _spectrumTimer.Start();
+                _vizRenderer = new VisualizerRenderer(
+                    _spectrum,
+                    () => _player.Position,
+                    () => _player.CurrentTrack != null);
+                _vizRenderer.OnModeChanged = () => UpdateSpectrumTimer();
+                var selector = _vizRenderer.BuildSelector();
+                VisualizerSelector.Children.Clear();
+                VisualizerSelector.Children.Add(selector);
+                // Place Win2D canvas in the star-sized grid row
+                if (_vizRenderer.Canvas != null)
+                    VisualizerCanvasHost.Children.Add(_vizRenderer.Canvas);
+            }
+
+            if (_vizRenderer.IsClassicMode)
+            {
+                // Classic mode: DispatcherTimer + WaveformCanvas
+                WaveformCanvas.Visibility = Visibility.Visible;
+                _vizRenderer.SetCanvasVisibility(false);
+                _vizRenderer.Stop();
+
+                if (_spectrumTimer == null)
+                {
+                    int ms = _vizFps >= 60 ? 16 : 33;
+                    _spectrumTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
+                    _spectrumTimer.Tick += (_, _) =>
+                    {
+                        if (_viewMode == ViewMode.Visualizer && (_vizRenderer?.IsClassicMode ?? true))
+                            DrawVisualization();
+                    };
+                    _spectrumTimer.Start();
+                }
+            }
+            else
+            {
+                // Win2D mode
+                WaveformCanvas.Visibility = Visibility.Collapsed;
+                _vizRenderer.SetCanvasVisibility(true);
+                _vizRenderer.Start();
+
+                if (_spectrumTimer != null)
+                {
+                    _spectrumTimer.Stop();
+                    _spectrumTimer = null;
+                }
+            }
         }
-        else if (!needsTimer && _spectrumTimer != null)
+        else
         {
-            _spectrumTimer.Stop();
-            _spectrumTimer = null;
-            _vizBandCount = 0;
-            _vizNoTrackText = null;
+            if (_spectrumTimer != null)
+            {
+                _spectrumTimer.Stop();
+                _spectrumTimer = null;
+                _vizBandCount = 0;
+                _vizNoTrackText = null;
+            }
+            _vizRenderer?.Stop();
         }
     }
 
