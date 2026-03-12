@@ -4,8 +4,8 @@ namespace Audiomatic;
 
 public record BackdropSettings(
     string Type = "acrylic",
-    double TintOpacity = 0.8,
-    double LuminosityOpacity = 0.9,
+    double TintOpacity = 1.0,
+    double LuminosityOpacity = 0.0,
     string TintColor = "#000000",
     string FallbackColor = "#1E1E1E",
     string Kind = "Base");
@@ -20,6 +20,10 @@ public record AppSettings(
     string Language,     // "fr", "en"
     string Theme = "system",  // "system", "light", "dark"
     int VisualizerFps = 30,
+    string VisualizerMode = "classic",  // "classic", "bars", "circle", "wave"
+    string VisualizerColor = "",        // hex string, empty = system accent
+    bool VisualizerGlow = true,
+    bool VisualizerDarkBg = false,
     int? WindowX = null,
     int? WindowY = null);
 

@@ -342,7 +342,13 @@
               Background="Transparent"
               SizeChanged="WaveformContainer_SizeChanged"
               PointerPressed="WaveformCanvas_PointerPressed">
-            <Canvas x:Name="WaveformCanvas"/>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <StackPanel x:Name="VisualizerSelector" Grid.Row="0"/>
+            <Grid x:Name="VisualizerCanvasHost" Grid.Row="1"/>
+            <Canvas x:Name="WaveformCanvas" Grid.Row="1"/>
         </Grid>
 
         <!-- Row 7: Media control (shown when Media view is active) -->

@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Audiomatic.Models;
 using Audiomatic.Services;
+using Audiomatic.Visualizer;
 using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
@@ -15,6 +16,7 @@ using Windows.ApplicationModel.DataTransfer;
 using Windows.Media.Control;
 using Windows.Storage;
 using Windows.Storage.Pickers;
+using WinRT;
 using WinRT.Interop;
 
 namespace Audiomatic;
@@ -41,6 +43,7 @@ public sealed partial class MainWindow : Window
     private int _vizFps = 30;
     private int _vizBandCount;  // tracks current bar count for reuse
     private TextBlock? _vizNoTrackText;
+    private VisualizerRenderer? _vizRenderer;
 
     // View transition animation
     private bool _isViewTransitioning;
@@ -49,6 +52,10 @@ public sealed partial class MainWindow : Window
     private Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager? _mediaSessionManager;
     private readonly Dictionary<string, MediaSessionPanel> _mediaSessionPanels = new();
     private DispatcherTimer? _mediaTickTimer;
+
+    // Custom acrylic
+    private DesktopAcrylicController? _acrylicController;
+    private SystemBackdropConfiguration? _configSource;
 
     // Collapse animation
     private enum CollapseState { Expanded, Compact, Mini }
@@ -1720,25 +1727,71 @@ public sealed partial class MainWindow : Window
 
     private void UpdateSpectrumTimer()
     {
-        bool needsTimer = _viewMode == ViewMode.Visualizer;
-        if (needsTimer && _spectrumTimer == null)
+        bool needsViz = _viewMode == ViewMode.Visualizer;
+
+        if (needsViz)
         {
             PrepareSpectrumForCurrentTrack();
-            int ms = _vizFps >= 60 ? 16 : 33;
-            _spectrumTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
-            _spectrumTimer.Tick += (_, _) =>
+
+            // Initialize renderer once
+            if (_vizRenderer == null)
             {
-                if (_viewMode == ViewMode.Visualizer)
-                    DrawVisualization();
-            };
-            _spectrumTimer.Start();
+                _vizRenderer = new VisualizerRenderer(
+                    _spectrum,
+                    () => _player.Position,
+                    () => _player.CurrentTrack != null);
+                _vizRenderer.OnModeChanged = () => UpdateSpectrumTimer();
+                var selector = _vizRenderer.BuildSelector();
+                VisualizerSelector.Children.Clear();
+                VisualizerSelector.Children.Add(selector);
+                // Place Win2D canvas in the star-sized grid row
+                if (_vizRenderer.Canvas != null)
+                    VisualizerCanvasHost.Children.Add(_vizRenderer.Canvas);
+            }
+
+            if (_vizRenderer.IsClassicMode)
+            {
+                // Classic mode: DispatcherTimer + WaveformCanvas
+                WaveformCanvas.Visibility = Visibility.Visible;
+                _vizRenderer.SetCanvasVisibility(false);
+                _vizRenderer.Stop();
+
+                if (_spectrumTimer == null)
+                {
+                    int ms = _vizFps >= 60 ? 16 : 33;
+                    _spectrumTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
+                    _spectrumTimer.Tick += (_, _) =>
+                    {
+                        if (_viewMode == ViewMode.Visualizer && (_vizRenderer?.IsClassicMode ?? true))
+                            DrawVisualization();
+                    };
+                    _spectrumTimer.Start();
+                }
+            }
+            else
+            {
+                // Win2D mode
+                WaveformCanvas.Visibility = Visibility.Collapsed;
+                _vizRenderer.SetCanvasVisibility(true);
+                _vizRenderer.Start();
+
+                if (_spectrumTimer != null)
+                {
+                    _spectrumTimer.Stop();
+                    _spectrumTimer = null;
+                }
+            }
         }
-        else if (!needsTimer && _spectrumTimer != null)
+        else
         {
-            _spectrumTimer.Stop();
-            _spectrumTimer = null;
-            _vizBandCount = 0;
-            _vizNoTrackText = null;
+            if (_spectrumTimer != null)
+            {
+                _spectrumTimer.Stop();
+                _spectrumTimer = null;
+                _vizBandCount = 0;
+                _vizNoTrackText = null;
+            }
+            _vizRenderer?.Stop();
         }
     }
 
@@ -2187,6 +2240,22 @@ public sealed partial class MainWindow : Window
         }
 
         AddBackdropOption("acrylic", "Acrylic");
+
+        // Custom acrylic — replaces flyout content with sliders
+        {
+            var isActive = currentBackdrop == "acrylic_custom";
+            panel.Children.Add(ActionPanel.CreateButton(
+                isActive ? "\uE73E" : "\uE8D7", "Custom Acrylic", [], () =>
+            {
+                var bd = SettingsManager.LoadBackdrop();
+                if (bd.Type != "acrylic_custom")
+                    bd = bd with { Type = "acrylic_custom" };
+                SettingsManager.SaveBackdrop(bd);
+                ApplyBackdrop(bd);
+                ShowAcrylicSettingsInFlyout(flyout, anchor);
+            }, isActive: isActive));
+        }
+
         AddBackdropOption("mica", "Mica");
         AddBackdropOption("mica_alt", "Mica Alt");
         AddBackdropOption("none", "None");
@@ -2288,12 +2357,288 @@ public sealed partial class MainWindow : Window
 
     private void ApplyBackdrop(BackdropSettings settings)
     {
-        SystemBackdrop = settings.Type switch
+        _acrylicController?.Dispose();
+        _acrylicController = null;
+
+        if (settings.Type == "acrylic_custom")
         {
-            "mica" => new MicaBackdrop(),
-            "mica_alt" => new MicaBackdrop { Kind = MicaKind.BaseAlt },
-            "none" => null,
-            _ => new DesktopAcrylicBackdrop()
+            SystemBackdrop = null;
+
+            _configSource = new SystemBackdropConfiguration { IsInputActive = true };
+            if (Content is FrameworkElement fe)
+                _configSource.Theme = (SystemBackdropTheme)fe.ActualTheme;
+
+            _acrylicController = new DesktopAcrylicController
+            {
+                TintOpacity = (float)settings.TintOpacity,
+                LuminosityOpacity = (float)settings.LuminosityOpacity,
+                TintColor = ParseColor(settings.TintColor),
+                FallbackColor = ParseColor(settings.FallbackColor),
+                Kind = settings.Kind == "Thin"
+                    ? DesktopAcrylicKind.Thin
+                    : DesktopAcrylicKind.Base,
+            };
+
+            _acrylicController.AddSystemBackdropTarget(
+                this.As<Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop>());
+            _acrylicController.SetSystemBackdropConfiguration(_configSource);
+        }
+        else
+        {
+            _configSource = null;
+            SystemBackdrop = settings.Type switch
+            {
+                "mica" => new MicaBackdrop(),
+                "mica_alt" => new MicaBackdrop { Kind = MicaKind.BaseAlt },
+                "none" => null,
+                _ => new DesktopAcrylicBackdrop()
+            };
+        }
+    }
+
+    private void ShowAcrylicSettingsInFlyout(Flyout flyout, FrameworkElement anchor)
+    {
+        var settings = SettingsManager.LoadBackdrop();
+        var suppressChanges = true;
+        var currentKind = settings.Kind;
+
+        var panel = new StackPanel { Spacing = 0, Width = 260 };
+
+        // Back button
+        panel.Children.Add(ActionPanel.CreateButton("\uE72B", "Backdrop", [], () =>
+        {
+            flyout.Hide();
+            ShowSettingsFlyout(anchor);
+        }));
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        // Tint Opacity
+        var tintOpacityValue = new TextBlock
+        {
+            FontSize = 12,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+            Text = settings.TintOpacity.ToString("F2")
+        };
+        var tintOpacitySlider = new Slider
+        {
+            Minimum = 0, Maximum = 1, StepFrequency = 0.01,
+            Value = settings.TintOpacity,
+            Margin = new Thickness(0, -2, 0, 0)
+        };
+
+        var tintOpacityHeader = new Grid { Margin = new Thickness(8, 8, 8, 0) };
+        tintOpacityHeader.Children.Add(new TextBlock
+        {
+            Text = "Opacité de teinte", FontSize = 12,
+            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+        });
+        tintOpacityHeader.Children.Add(tintOpacityValue);
+        panel.Children.Add(tintOpacityHeader);
+        panel.Children.Add(new StackPanel
+        {
+            Margin = new Thickness(4, 0, 4, 0),
+            Children = { tintOpacitySlider }
+        });
+
+        // Luminosity
+        var luminosityValue = new TextBlock
+        {
+            FontSize = 12,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+            Text = settings.LuminosityOpacity.ToString("F2")
+        };
+        var luminositySlider = new Slider
+        {
+            Minimum = 0, Maximum = 1, StepFrequency = 0.01,
+            Value = settings.LuminosityOpacity,
+            Margin = new Thickness(0, -2, 0, 0)
+        };
+
+        var luminosityHeader = new Grid { Margin = new Thickness(8, 8, 8, 0) };
+        luminosityHeader.Children.Add(new TextBlock
+        {
+            Text = "Luminosité", FontSize = 12,
+            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+        });
+        luminosityHeader.Children.Add(luminosityValue);
+        panel.Children.Add(luminosityHeader);
+        panel.Children.Add(new StackPanel
+        {
+            Margin = new Thickness(4, 0, 4, 0),
+            Children = { luminositySlider }
+        });
+
+        // Tint Color
+        var tintColorPreview = new Border
+        {
+            Width = 28, Height = 28, CornerRadius = new CornerRadius(4),
+            BorderThickness = new Thickness(1),
+            BorderBrush = ThemeHelper.Brush("ControlStrokeColorDefaultBrush"),
+            Background = new SolidColorBrush(ParseColor(settings.TintColor))
+        };
+        var tintColorBox = new TextBox
+        {
+            Text = settings.TintColor, FontSize = 12, MaxLength = 7,
+            MinWidth = 0
+        };
+
+        var tintColorGrid = new Grid
+        {
+            ColumnSpacing = 8,
+            Margin = new Thickness(8, 8, 8, 0)
+        };
+        tintColorGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        tintColorGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        tintColorGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var tintColorLabel = new TextBlock
+        {
+            Text = "Teinte", FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+        };
+        Grid.SetColumn(tintColorLabel, 0);
+        Grid.SetColumn(tintColorBox, 1);
+        Grid.SetColumn(tintColorPreview, 2);
+        tintColorGrid.Children.Add(tintColorLabel);
+        tintColorGrid.Children.Add(tintColorBox);
+        tintColorGrid.Children.Add(tintColorPreview);
+        panel.Children.Add(tintColorGrid);
+
+        // Fallback Color
+        var fallbackColorPreview = new Border
+        {
+            Width = 28, Height = 28, CornerRadius = new CornerRadius(4),
+            BorderThickness = new Thickness(1),
+            BorderBrush = ThemeHelper.Brush("ControlStrokeColorDefaultBrush"),
+            Background = new SolidColorBrush(ParseColor(settings.FallbackColor))
+        };
+        var fallbackColorBox = new TextBox
+        {
+            Text = settings.FallbackColor, FontSize = 12, MaxLength = 7,
+            MinWidth = 0
+        };
+
+        var fallbackColorGrid = new Grid
+        {
+            ColumnSpacing = 8,
+            Margin = new Thickness(8, 8, 8, 0)
+        };
+        fallbackColorGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        fallbackColorGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        fallbackColorGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var fallbackColorLabel = new TextBlock
+        {
+            Text = "Repli", FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+        };
+        Grid.SetColumn(fallbackColorLabel, 0);
+        Grid.SetColumn(fallbackColorBox, 1);
+        Grid.SetColumn(fallbackColorPreview, 2);
+        fallbackColorGrid.Children.Add(fallbackColorLabel);
+        fallbackColorGrid.Children.Add(fallbackColorBox);
+        fallbackColorGrid.Children.Add(fallbackColorPreview);
+        panel.Children.Add(fallbackColorGrid);
+
+        // Kind (Base / Thin)
+        var baseBtn = new Button
+        {
+            Content = "Base", HorizontalAlignment = HorizontalAlignment.Stretch,
+            CornerRadius = new CornerRadius(4), Tag = "Base"
+        };
+        var thinBtn = new Button
+        {
+            Content = "Thin", HorizontalAlignment = HorizontalAlignment.Stretch,
+            CornerRadius = new CornerRadius(4), Tag = "Thin"
+        };
+
+        void UpdateKindButtons()
+        {
+            var selected = (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"];
+            var normal = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            baseBtn.Background = currentKind == "Base" ? selected : normal;
+            thinBtn.Background = currentKind == "Thin" ? selected : normal;
+        }
+
+        UpdateKindButtons();
+
+        var kindGrid = new Grid { ColumnSpacing = 6, Margin = new Thickness(8, 10, 8, 8) };
+        kindGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        kindGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        kindGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var kindLabel = new TextBlock
+        {
+            Text = "Style", FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+        };
+        Grid.SetColumn(kindLabel, 0);
+        Grid.SetColumn(baseBtn, 1);
+        Grid.SetColumn(thinBtn, 2);
+        kindGrid.Children.Add(kindLabel);
+        kindGrid.Children.Add(baseBtn);
+        kindGrid.Children.Add(thinBtn);
+        panel.Children.Add(kindGrid);
+
+        // Apply changes helper
+        void ApplyChanges()
+        {
+            if (suppressChanges) return;
+            var bd = new BackdropSettings(
+                Type: "acrylic_custom",
+                TintOpacity: tintOpacitySlider.Value,
+                LuminosityOpacity: luminositySlider.Value,
+                TintColor: tintColorBox.Text,
+                FallbackColor: fallbackColorBox.Text,
+                Kind: currentKind);
+            SettingsManager.SaveBackdrop(bd);
+            ApplyBackdrop(bd);
+        }
+
+        // Wire events
+        tintOpacitySlider.ValueChanged += (_, _) =>
+        {
+            tintOpacityValue.Text = tintOpacitySlider.Value.ToString("F2");
+            ApplyChanges();
+        };
+        luminositySlider.ValueChanged += (_, _) =>
+        {
+            luminosityValue.Text = luminositySlider.Value.ToString("F2");
+            ApplyChanges();
+        };
+        tintColorBox.TextChanged += (_, _) =>
+        {
+            try { tintColorPreview.Background = new SolidColorBrush(ParseColor(tintColorBox.Text)); } catch { }
+            if (tintColorBox.Text.StartsWith('#') && tintColorBox.Text.Length == 7)
+                ApplyChanges();
+        };
+        fallbackColorBox.TextChanged += (_, _) =>
+        {
+            try { fallbackColorPreview.Background = new SolidColorBrush(ParseColor(fallbackColorBox.Text)); } catch { }
+            if (fallbackColorBox.Text.StartsWith('#') && fallbackColorBox.Text.Length == 7)
+                ApplyChanges();
+        };
+        baseBtn.Click += (_, _) => { currentKind = "Base"; UpdateKindButtons(); ApplyChanges(); };
+        thinBtn.Click += (_, _) => { currentKind = "Thin"; UpdateKindButtons(); ApplyChanges(); };
+
+        suppressChanges = false;
+
+        flyout.Content = panel;
+    }
+
+    private static Windows.UI.Color ParseColor(string hex)
+    {
+        hex = hex.TrimStart('#');
+        if (hex.Length != 6)
+            return new Windows.UI.Color { A = 255, R = 0, G = 0, B = 0 };
+        return new Windows.UI.Color
+        {
+            A = 255,
+            R = Convert.ToByte(hex[..2], 16),
+            G = Convert.ToByte(hex[2..4], 16),
+            B = Convert.ToByte(hex[4..6], 16)
         };
     }
 
