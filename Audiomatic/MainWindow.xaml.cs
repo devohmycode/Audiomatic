@@ -2245,7 +2245,7 @@ public sealed partial class MainWindow : Window
         {
             var isActive = currentBackdrop == "acrylic_custom";
             panel.Children.Add(ActionPanel.CreateButton(
-                isActive ? "\uE73E" : "\uE8D7", "Acrylic personnalisé", [], () =>
+                isActive ? "\uE73E" : "\uE8D7", "Custom Acrylic", [], () =>
             {
                 var bd = SettingsManager.LoadBackdrop();
                 if (bd.Type != "acrylic_custom")
