@@ -255,13 +255,9 @@
                         Padding="8,4" Click="NavPodcast_Click">
                     <TextBlock x:Name="NavPodcastText" Text="Podcasts" FontSize="12"/>
                 </Button>
-                <Button x:Name="NavVisualizerBtn" Background="Transparent" BorderThickness="0"
-                        Padding="8,4" Click="NavVisualizer_Click">
-                    <TextBlock x:Name="NavVisualizerText" Text="Visualizer" FontSize="12"/>
-                </Button>
-                <Button x:Name="NavMediaBtn" Background="Transparent" BorderThickness="0"
-                        Padding="8,4" Click="NavMedia_Click">
-                    <TextBlock x:Name="NavMediaText" Text="Media" FontSize="12"/>
+                <Button x:Name="NavMoreBtn" Background="Transparent" BorderThickness="0"
+                        Padding="8,4" Click="NavMore_Click">
+                    <TextBlock x:Name="NavMoreText" Text="..." FontSize="12"/>
                 </Button>
             </StackPanel>
 

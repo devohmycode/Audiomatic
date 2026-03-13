@@ -46,6 +46,16 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 - **Smart transport controls** — shuffle, repeat, previous, and next are disabled during radio playback
 - **Visualizer support** — real-time WASAPI loopback spectrum analysis for live streams
 
+### Podcasts
+
+- **Search podcasts** — discover podcasts via the iTunes Search API
+- **Subscribe** — add podcasts to your subscription list, persisted across sessions
+- **Episode browsing** — view episode list with title, date, duration, and description
+- **Direct playback** — play any episode directly in the built-in player
+- **Read/unread tracking** — episodes automatically marked as read when fully listened
+- **Manual toggle** — mark episodes as read or unread via Raycast-style context menu
+- **Subscription management** — unsubscribe from podcasts via context menu
+
 ### Search & Sort
 
 - Real-time filtering by title, artist, or album
@@ -66,8 +76,9 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 | **Playlist Detail** | View and reorder tracks within a playlist |
 | **Queue** | View and manage the current playback queue |
 | **Radio** | Play online radio streams with station management |
-| **Visualizer** | Real-time FFT spectrum analyzer with mirror mode |
-| **Media Control** | Monitor and control background media players (SMTC) |
+| **Podcasts** | Search, subscribe, browse episodes, and play podcasts |
+| **Visualizer** | Real-time FFT spectrum analyzer with mirror mode (via "..." menu) |
+| **Media Control** | Monitor and control background media players via "..." menu |
 
 ### Metadata Editor
 
@@ -135,6 +146,8 @@ All application data is stored in `%LOCALAPPDATA%\Audiomatic\`:
 - `settings.json` — User preferences
 - `queue.json` — Current queue state
 - `radio_stations.json` — Saved radio stations
+- `podcasts.json` — Podcast subscriptions
+- `podcast_read.json` — Read/unread episode tracking
 
 ## Building
 
