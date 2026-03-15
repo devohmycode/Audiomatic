@@ -17,6 +17,7 @@ public sealed class AudioPlayerService : IDisposable
     private AudioFileReader? _audioReader;
     private bool _useNAudio;
     private bool _isMuted;
+    private double _volume = 1.0;
     private InMemoryRandomAccessStream? _albumArtStream;
 
     // Equalizer
@@ -60,12 +61,13 @@ public sealed class AudioPlayerService : IDisposable
     }
     public double Volume
     {
-        get => _mediaPlayer.Volume;
+        get => _volume;
         set
         {
-            _mediaPlayer.Volume = Math.Clamp(value, 0, 1);
-            if (_waveOut != null)
-                _waveOut.Volume = (float)Math.Clamp(value, 0, 1);
+            _volume = Math.Clamp(value, 0, 1);
+            _mediaPlayer.Volume = _volume;
+            if (_audioReader != null)
+                _audioReader.Volume = _isMuted ? 0f : (float)_volume;
         }
     }
     public bool IsMuted
@@ -75,8 +77,8 @@ public sealed class AudioPlayerService : IDisposable
         {
             _isMuted = value;
             _mediaPlayer.IsMuted = value;
-            if (_waveOut != null)
-                _waveOut.Volume = value ? 0f : (float)Math.Clamp(_mediaPlayer.Volume, 0, 1);
+            if (_audioReader != null)
+                _audioReader.Volume = value ? 0f : (float)_volume;
         }
     }
 
@@ -146,9 +148,9 @@ public sealed class AudioPlayerService : IDisposable
             _equalizer.SetAllBands(_eqGains);
             _equalizer.Preamp = DbToLinear(_eqPreampDb);
 
+            _audioReader.Volume = _isMuted ? 0f : (float)_volume;
             _waveOut = new WasapiOut();
             _waveOut.Init(new NAudio.Wave.SampleProviders.SampleToWaveProvider16(_equalizer));
-            _waveOut.Volume = _isMuted ? 0f : (float)Math.Clamp(_mediaPlayer.Volume, 0, 1);
             _waveOut.PlaybackStopped += (_, _) =>
             {
                 if (_audioReader != null && _audioReader.CurrentTime >= _audioReader.TotalTime - TimeSpan.FromMilliseconds(500))
@@ -210,7 +212,7 @@ public sealed class AudioPlayerService : IDisposable
             session.BufferingEnded += (_, _) =>
                 _dispatcherQueue?.TryEnqueue(() => BufferingChanged?.Invoke(false));
 
-            _mediaPlayer.Volume = Volume;
+            _mediaPlayer.Volume = _volume;
             _mediaPlayer.Play();
 
             // Wait up to 15s for the stream to open
