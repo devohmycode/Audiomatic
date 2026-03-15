@@ -27,7 +27,12 @@ public record AppSettings(
     bool VisualizerGlow = true,
     bool VisualizerDarkBg = false,
     int? WindowX = null,
-    int? WindowY = null);
+    int? WindowY = null,
+    bool EqEnabled = true,
+    string EqPreset = "Flat",
+    float[]? EqBands = null,       // 10-band gains in dB (-12 to +12)
+    float EqPreamp = 0f,
+    string AccentColor = "");      // hex string, empty = system accent
 
 public static class SettingsManager
 {

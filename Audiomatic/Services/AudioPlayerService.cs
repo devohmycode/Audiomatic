@@ -19,6 +19,12 @@ public sealed class AudioPlayerService : IDisposable
     private bool _isMuted;
     private InMemoryRandomAccessStream? _albumArtStream;
 
+    // Equalizer
+    private Equalizer? _equalizer;
+    private float[] _eqGains = new float[10];
+    private bool _eqEnabled = true;
+    private float _eqPreampDb;
+
     // NAudio-supported but not natively by MediaPlayer
     private static readonly HashSet<string> NAudioOnlyExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".ape", ".aiff" };
@@ -130,58 +136,39 @@ public sealed class AudioPlayerService : IDisposable
         Stop();
         CurrentTrack = track;
 
-        var ext = Path.GetExtension(track.Path).ToLowerInvariant();
+        // Always use NAudio for file playback (enables equalizer)
+        _useNAudio = true;
+        try
+        {
+            _audioReader = new AudioFileReader(track.Path);
+            _equalizer = new Equalizer(_audioReader);
+            _equalizer.Enabled = _eqEnabled;
+            _equalizer.SetAllBands(_eqGains);
+            _equalizer.Preamp = DbToLinear(_eqPreampDb);
 
-        if (NAudioOnlyExtensions.Contains(ext))
-        {
-            // Use NAudio for formats MediaPlayer can't handle
-            _useNAudio = true;
-            try
+            _waveOut = new WasapiOut();
+            _waveOut.Init(new NAudio.Wave.SampleProviders.SampleToWaveProvider16(_equalizer));
+            _waveOut.Volume = _isMuted ? 0f : (float)Math.Clamp(_mediaPlayer.Volume, 0, 1);
+            _waveOut.PlaybackStopped += (_, _) =>
             {
-                _audioReader = new AudioFileReader(track.Path);
-                _waveOut = new WasapiOut();
-                _waveOut.Init(_audioReader);
-                _waveOut.Volume = _isMuted ? 0f : (float)Math.Clamp(_mediaPlayer.Volume, 0, 1);
-                _waveOut.PlaybackStopped += (_, _) =>
+                if (_audioReader != null && _audioReader.CurrentTime >= _audioReader.TotalTime - TimeSpan.FromMilliseconds(500))
                 {
-                    if (_audioReader != null && _audioReader.CurrentTime >= _audioReader.TotalTime - TimeSpan.FromMilliseconds(500))
-                    {
-                        IsPlaying = false;
-                        _dispatcherQueue?.TryEnqueue(() => MediaEnded?.Invoke());
-                    }
-                };
-                _waveOut.Play();
-                IsPlaying = true;
-                UpdateSmtc(track);
-                _dispatcherQueue?.TryEnqueue(() =>
-                {
-                    MediaOpened?.Invoke();
-                    PlaybackStarted?.Invoke();
-                });
-            }
-            catch (Exception ex)
+                    IsPlaying = false;
+                    _dispatcherQueue?.TryEnqueue(() => MediaEnded?.Invoke());
+                }
+            };
+            _waveOut.Play();
+            IsPlaying = true;
+            UpdateSmtc(track);
+            _dispatcherQueue?.TryEnqueue(() =>
             {
-                _dispatcherQueue?.TryEnqueue(() => MediaFailed?.Invoke(ex.Message));
-            }
+                MediaOpened?.Invoke();
+                PlaybackStarted?.Invoke();
+            });
         }
-        else
+        catch (Exception ex)
         {
-            // Use MediaPlayer (handles mp3, flac, wav, ogg, aac, wma, m4a, opus)
-            _useNAudio = false;
-            try
-            {
-                var file = await StorageFile.GetFileFromPathAsync(track.Path);
-                _mediaPlayer.Source = MediaSource.CreateFromStorageFile(file);
-                _mediaPlayer.Volume = Volume;
-                _mediaPlayer.Play();
-                IsPlaying = true;
-                UpdateSmtc(track);
-                _dispatcherQueue?.TryEnqueue(() => PlaybackStarted?.Invoke());
-            }
-            catch (Exception ex)
-            {
-                _dispatcherQueue?.TryEnqueue(() => MediaFailed?.Invoke(ex.Message));
-            }
+            _dispatcherQueue?.TryEnqueue(() => MediaFailed?.Invoke(ex.Message));
         }
     }
 
@@ -394,6 +381,44 @@ public sealed class AudioPlayerService : IDisposable
         }
         catch { }
     }
+
+    // -- Equalizer control --
+
+    public bool EqEnabled
+    {
+        get => _eqEnabled;
+        set
+        {
+            _eqEnabled = value;
+            if (_equalizer != null) _equalizer.Enabled = value;
+        }
+    }
+
+    public void SetEqBand(int index, float gainDb)
+    {
+        if (index >= 0 && index < _eqGains.Length)
+            _eqGains[index] = Math.Clamp(gainDb, -12f, 12f);
+        _equalizer?.SetBand(index, gainDb);
+    }
+
+    public void SetEqAllBands(float[] gains)
+    {
+        for (int i = 0; i < Math.Min(gains.Length, _eqGains.Length); i++)
+            _eqGains[i] = Math.Clamp(gains[i], -12f, 12f);
+        _equalizer?.SetAllBands(_eqGains);
+    }
+
+    public float[] GetEqGains() => (float[])_eqGains.Clone();
+
+    public void SetEqPreamp(float db)
+    {
+        _eqPreampDb = db;
+        if (_equalizer != null) _equalizer.Preamp = DbToLinear(db);
+    }
+
+    public float EqPreampDb => _eqPreampDb;
+
+    private static float DbToLinear(float db) => MathF.Pow(10f, db / 20f);
 
     public void SuspendPositionTimer()
     {

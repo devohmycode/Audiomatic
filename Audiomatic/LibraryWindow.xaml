@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Audiomatic.LibraryWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Library">
+
+    <Grid x:Name="RootGrid" KeyDown="RootGrid_KeyDown">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Grid x:Name="CustomTitleBar" Grid.Row="0" Padding="10,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Grid.Column="0"
+                       Text="Library"
+                       FontSize="13"
+                       VerticalAlignment="Center"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+
+            <Button Grid.Column="1"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    Padding="8,4"
+                    Click="Close_Click">
+                <FontIcon Glyph="&#xE711;" FontSize="12"/>
+            </Button>
+        </Grid>
+
+        <Grid Grid.Row="1" Margin="12,8,12,0" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="3*"/>
+            </Grid.ColumnDefinitions>
+
+            <Button Grid.Column="0"
+                    Padding="0,2"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    HorizontalAlignment="Left"
+                    Click="TitleHeader_Click">
+                <TextBlock x:Name="TitleHeaderText"
+                           Text="Titre"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </Button>
+
+            <Button Grid.Column="1"
+                    Padding="0,2"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    HorizontalAlignment="Left"
+                    Click="FolderHeader_Click">
+                <TextBlock x:Name="FolderHeaderText"
+                           Text="Dossier"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </Button>
+        </Grid>
+
+        <Grid Grid.Row="2" Margin="12,4,12,12">
+            <ListView x:Name="RowsList"
+                      SelectionMode="None"
+                      IsItemClickEnabled="False">
+                <ListView.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Padding="0,4" ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2*"/>
+                                <ColumnDefinition Width="3*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="{Binding Title}"
+                                       TextWrapping="Wrap"/>
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding FolderPath}"
+                                       TextWrapping="Wrap"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+
+            <TextBlock x:Name="EmptyStateText"
+                       Text="No tracks in library."
+                       FontSize="12"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Visibility="Collapsed"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+        </Grid>
+    </Grid>
+</Window>

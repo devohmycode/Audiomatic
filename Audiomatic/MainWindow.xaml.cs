@@ -33,7 +33,7 @@ public sealed partial class MainWindow : Window
     private bool _sortAscending = true;
 
     // Playlist navigation
-    private enum ViewMode { Library, PlaylistList, PlaylistDetail, Queue, Radio, Podcast, PodcastEpisodes, Visualizer, MediaControl }
+    private enum ViewMode { Library, PlaylistList, PlaylistDetail, Queue, Radio, Podcast, PodcastEpisodes, Visualizer, Equalizer, MediaControl }
     private ViewMode _viewMode = ViewMode.Library;
     private PlaylistInfo? _currentPlaylist;
 
@@ -55,6 +55,16 @@ public sealed partial class MainWindow : Window
     private TextBlock? _vizNoTrackText;
     private VisualizerRenderer? _vizRenderer;
 
+    // Equalizer
+    private Slider[] _eqSliders = new Slider[10];
+    private TextBlock[] _eqGainLabels = new TextBlock[10];
+    private Slider? _eqPreampSlider;
+    private TextBlock? _eqPreampLabel;
+    private ComboBox? _eqPresetCombo;
+    private ToggleSwitch? _eqToggle;
+    private bool _eqUiBuilt;
+    private bool _eqUpdatingFromPreset;
+
     // View transition animation
     private bool _isViewTransitioning;
 
@@ -66,6 +76,9 @@ public sealed partial class MainWindow : Window
     // Custom acrylic
     private DesktopAcrylicController? _acrylicController;
     private SystemBackdropConfiguration? _configSource;
+
+    // Detached library window
+    private LibraryWindow? _libraryWindow;
 
     // Collapse animation
     private enum CollapseState { Expanded, Compact, Mini }
@@ -168,29 +181,33 @@ public sealed partial class MainWindow : Window
             presenter.SetBorderAndTitleBar(true, false);
         }
 
+        AppWindow.Changed += MainAppWindow_Changed;
+
         // Restore window position (default: bottom-right)
         RestoreWindowPosition();
 
-        // Apply backdrop and theme
+        // Load settings
+        var settings = SettingsManager.Load();
+
+        // Apply backdrop, theme, and accent color
         ApplyBackdrop(SettingsManager.LoadBackdrop());
+        ThemeHelper.ApplyAccentColor(settings.AccentColor);
         ApplyTheme(SettingsManager.LoadTheme());
 
         // Set up audio player
         _player.SetDispatcherQueue(DispatcherQueue);
-        _player.MediaOpened += OnMediaOpened;
-        _player.MediaEnded += OnMediaEnded;
-        _player.MediaFailed += OnMediaFailed;
-        _player.PositionChanged += OnPositionChanged;
-        _player.BufferingChanged += OnBufferingChanged;
-
-        // Load settings
-        var settings = SettingsManager.Load();
         VolumeSlider.Value = settings.Volume * 100;
         _player.Volume = settings.Volume;
         _sortBy = settings.SortBy;
         _sortAscending = settings.SortAscending;
         SortAscending.IsChecked = _sortAscending;
         UpdateSortChecks();
+
+        // Load EQ settings
+        _player.EqEnabled = settings.EqEnabled;
+        if (settings.EqBands is { Length: 10 })
+            _player.SetEqAllBands(settings.EqBands);
+        _player.SetEqPreamp(settings.EqPreamp);
 
         // Load radio stations and podcast subscriptions
         _radioStations = SettingsManager.LoadRadioStations();
@@ -243,6 +260,8 @@ public sealed partial class MainWindow : Window
         this.Closed += (_, _) =>
         {
             _isQuitting = true;
+            AppWindow.Changed -= MainAppWindow_Changed;
+            CloseLibraryWindow();
             UnregisterHotKey(_hwnd, HOTKEY_ID);
             UnregisterHotKey(_hwnd, HOTKEY_COLLAPSE_ID);
             RemoveTrayIcon();
@@ -274,6 +293,7 @@ public sealed partial class MainWindow : Window
     private void LoadTracks()
     {
         _allTracks = LibraryManager.GetAllTracks();
+        RefreshLibraryWindow();
         ApplyFilterAndSort();
     }
 
@@ -1014,7 +1034,7 @@ public sealed partial class MainWindow : Window
         SetTab(NavQueueText, _viewMode == ViewMode.Queue);
         SetTab(NavRadioText, _viewMode == ViewMode.Radio);
         SetTab(NavPodcastText, _viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes);
-        SetTab(NavMoreText, _viewMode == ViewMode.Visualizer || _viewMode == ViewMode.MediaControl);
+        SetTab(NavMoreText, _viewMode == ViewMode.Visualizer || _viewMode == ViewMode.Equalizer || _viewMode == ViewMode.MediaControl);
 
         // Show/hide search & sort
         SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail)
@@ -1023,9 +1043,11 @@ public sealed partial class MainWindow : Window
         // Show/hide content containers based on view mode
         var isPodcast = _viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes;
         var isTrackView = _viewMode != ViewMode.Visualizer && _viewMode != ViewMode.MediaControl
-            && _viewMode != ViewMode.Radio && !isPodcast;
+            && _viewMode != ViewMode.Radio && _viewMode != ViewMode.Equalizer && !isPodcast;
         TrackListView.Visibility = isTrackView ? Visibility.Visible : Visibility.Collapsed;
         WaveformContainer.Visibility = _viewMode == ViewMode.Visualizer
+            ? Visibility.Visible : Visibility.Collapsed;
+        EqualizerContainer.Visibility = _viewMode == ViewMode.Equalizer
             ? Visibility.Visible : Visibility.Collapsed;
         RadioContainer.Visibility = _viewMode == ViewMode.Radio
             ? Visibility.Visible : Visibility.Collapsed;
@@ -1046,6 +1068,7 @@ public sealed partial class MainWindow : Window
 
         // Target the visible content container
         FrameworkElement target = _viewMode == ViewMode.Visualizer ? WaveformContainer
+            : _viewMode == ViewMode.Equalizer ? EqualizerContainer
             : _viewMode == ViewMode.MediaControl ? MediaContainer
             : _viewMode == ViewMode.Radio ? RadioContainer
             : (_viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes) ? PodcastContainer
@@ -1088,6 +1111,7 @@ public sealed partial class MainWindow : Window
 
             // Re-target if container changed (e.g. Library→Visualizer)
             FrameworkElement newTarget = _viewMode == ViewMode.Visualizer ? WaveformContainer
+                : _viewMode == ViewMode.Equalizer ? EqualizerContainer
                 : _viewMode == ViewMode.MediaControl ? MediaContainer
                 : _viewMode == ViewMode.Radio ? RadioContainer
                 : (_viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes) ? PodcastContainer
@@ -2420,12 +2444,307 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(ActionPanel.CreateButton("\uE9D9", "Visualizer", [],
             () => { flyout.Hide(); NavVisualizer_Click(sender, e); },
             isActive: _viewMode == ViewMode.Visualizer));
+        panel.Children.Add(ActionPanel.CreateButton("\uE9E9", "Equalizer", [],
+            () => { flyout.Hide(); NavEqualizer_Click(sender, e); },
+            isActive: _viewMode == ViewMode.Equalizer));
         panel.Children.Add(ActionPanel.CreateButton("\uE93C", "Media", [],
             () => { flyout.Hide(); NavMedia_Click(sender, e); },
             isActive: _viewMode == ViewMode.MediaControl));
 
         flyout.Content = panel;
         flyout.ShowAt(sender as FrameworkElement ?? NavMoreBtn);
+    }
+
+    // -- Equalizer ------------------------------------------------
+
+    private void NavEqualizer_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewMode == ViewMode.Equalizer) return;
+        _viewMode = ViewMode.Equalizer;
+        _currentPlaylist = null;
+        UpdateNavigation();
+        UpdateSpectrumTimer();
+        UpdateMediaTimer();
+        AnimateViewTransition(() => BuildEqualizerUI());
+    }
+
+    private void BuildEqualizerUI()
+    {
+        if (_eqUiBuilt)
+        {
+            // Sync UI with current player state
+            SyncEqUiToPlayer();
+            return;
+        }
+        _eqUiBuilt = true;
+
+        EqualizerPanel.Children.Clear();
+
+        // Header row: title + toggle
+        var headerGrid = new Grid { Margin = new Thickness(0, 8, 0, 0) };
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var titleText = new TextBlock
+        {
+            Text = "Equalizer",
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(titleText, 0);
+
+        _eqToggle = new ToggleSwitch
+        {
+            IsOn = _player.EqEnabled,
+            OnContent = "On",
+            OffContent = "Off",
+            MinWidth = 0
+        };
+        _eqToggle.Toggled += EqToggle_Toggled;
+        Grid.SetColumn(_eqToggle, 1);
+
+        headerGrid.Children.Add(titleText);
+        headerGrid.Children.Add(_eqToggle);
+        EqualizerPanel.Children.Add(headerGrid);
+
+        // Preset selector
+        var settings = SettingsManager.Load();
+        _eqPresetCombo = new ComboBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            FontSize = 13
+        };
+        foreach (var preset in Equalizer.Presets.Keys)
+            _eqPresetCombo.Items.Add(preset);
+        _eqPresetCombo.SelectedItem = settings.EqPreset;
+        if (_eqPresetCombo.SelectedItem == null) _eqPresetCombo.SelectedIndex = 0;
+        _eqPresetCombo.SelectionChanged += EqPreset_Changed;
+        EqualizerPanel.Children.Add(_eqPresetCombo);
+
+        // EQ bands grid
+        var bandsGrid = new Grid { MinHeight = 200 };
+        // dB labels column + 10 band columns
+        bandsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        for (int i = 0; i < 10; i++)
+            bandsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        bandsGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // sliders
+        bandsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // gain values
+        bandsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // freq labels
+
+        // dB labels on the left
+        var dbPanel = new Grid { Margin = new Thickness(0, 0, 4, 0) };
+        dbPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        dbPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        dbPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var dbTop = new TextBlock { Text = "+12", FontSize = 9,
+            Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"), VerticalAlignment = VerticalAlignment.Top };
+        var dbBottom = new TextBlock { Text = "-12", FontSize = 9,
+            Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"), VerticalAlignment = VerticalAlignment.Bottom };
+        Grid.SetRow(dbTop, 0);
+        Grid.SetRow(dbBottom, 2);
+        dbPanel.Children.Add(dbTop);
+        dbPanel.Children.Add(dbBottom);
+        Grid.SetColumn(dbPanel, 0);
+        Grid.SetRow(dbPanel, 0);
+        bandsGrid.Children.Add(dbPanel);
+
+        // Load current gains
+        var gains = _player.GetEqGains();
+
+        for (int i = 0; i < 10; i++)
+        {
+            int bandIndex = i;
+
+            // Vertical slider
+            var slider = new Slider
+            {
+                Orientation = Orientation.Vertical,
+                Minimum = -12,
+                Maximum = 12,
+                StepFrequency = 0.5,
+                Value = gains[i],
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Width = 28
+            };
+            slider.ValueChanged += (s, args) => EqBand_Changed(bandIndex, args.NewValue);
+            Grid.SetColumn(slider, i + 1);
+            Grid.SetRow(slider, 0);
+            bandsGrid.Children.Add(slider);
+            _eqSliders[i] = slider;
+
+            // Gain label
+            var gainLabel = new TextBlock
+            {
+                Text = $"{gains[i]:0.#}",
+                FontSize = 9,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
+            };
+            Grid.SetColumn(gainLabel, i + 1);
+            Grid.SetRow(gainLabel, 1);
+            bandsGrid.Children.Add(gainLabel);
+            _eqGainLabels[i] = gainLabel;
+
+            // Frequency label
+            var freqLabel = new TextBlock
+            {
+                Text = Equalizer.FrequencyLabels[i],
+                FontSize = 9,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+                Margin = new Thickness(0, 2, 0, 0)
+            };
+            Grid.SetColumn(freqLabel, i + 1);
+            Grid.SetRow(freqLabel, 2);
+            bandsGrid.Children.Add(freqLabel);
+        }
+
+        EqualizerPanel.Children.Add(bandsGrid);
+
+        // Preamp row
+        var preampGrid = new Grid { Margin = new Thickness(0, 4, 0, 8) };
+        preampGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        preampGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        preampGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var preampLabel = new TextBlock
+        {
+            Text = "Preamp",
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0)
+        };
+        Grid.SetColumn(preampLabel, 0);
+
+        _eqPreampSlider = new Slider
+        {
+            Minimum = -12,
+            Maximum = 12,
+            StepFrequency = 0.5,
+            Value = _player.EqPreampDb,
+            Height = 24,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        _eqPreampSlider.ValueChanged += EqPreamp_Changed;
+        Grid.SetColumn(_eqPreampSlider, 1);
+
+        _eqPreampLabel = new TextBlock
+        {
+            Text = $"{_player.EqPreampDb:0.#} dB",
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
+            Margin = new Thickness(8, 0, 0, 0),
+            MinWidth = 40
+        };
+        Grid.SetColumn(_eqPreampLabel, 2);
+
+        preampGrid.Children.Add(preampLabel);
+        preampGrid.Children.Add(_eqPreampSlider);
+        preampGrid.Children.Add(_eqPreampLabel);
+        EqualizerPanel.Children.Add(preampGrid);
+
+        // Reset button
+        var resetBtn = new Button
+        {
+            Content = "Reset",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Padding = new Thickness(16, 6, 16, 6),
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        resetBtn.Click += EqReset_Click;
+        EqualizerPanel.Children.Add(resetBtn);
+    }
+
+    private void SyncEqUiToPlayer()
+    {
+        if (_eqToggle != null) _eqToggle.IsOn = _player.EqEnabled;
+        var gains = _player.GetEqGains();
+        _eqUpdatingFromPreset = true;
+        for (int i = 0; i < 10; i++)
+        {
+            if (_eqSliders[i] != null)
+            {
+                _eqSliders[i].Value = gains[i];
+                _eqGainLabels[i].Text = $"{gains[i]:0.#}";
+            }
+        }
+        if (_eqPreampSlider != null) _eqPreampSlider.Value = _player.EqPreampDb;
+        if (_eqPreampLabel != null) _eqPreampLabel.Text = $"{_player.EqPreampDb:0.#} dB";
+        _eqUpdatingFromPreset = false;
+    }
+
+    private void EqToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        _player.EqEnabled = _eqToggle!.IsOn;
+        SaveEqSettings();
+    }
+
+    private void EqPreset_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_eqPresetCombo?.SelectedItem is not string presetName) return;
+        if (!Equalizer.Presets.TryGetValue(presetName, out var gains)) return;
+
+        _eqUpdatingFromPreset = true;
+        _player.SetEqAllBands(gains);
+        for (int i = 0; i < 10; i++)
+        {
+            if (_eqSliders[i] != null)
+            {
+                _eqSliders[i].Value = gains[i];
+                _eqGainLabels[i].Text = $"{gains[i]:0.#}";
+            }
+        }
+        _eqUpdatingFromPreset = false;
+        SaveEqSettings();
+    }
+
+    private void EqBand_Changed(int bandIndex, double newValue)
+    {
+        float gain = (float)newValue;
+        _player.SetEqBand(bandIndex, gain);
+        if (_eqGainLabels[bandIndex] != null)
+            _eqGainLabels[bandIndex].Text = $"{gain:0.#}";
+
+        // Update preset to "Custom" if user manually adjusts
+        if (!_eqUpdatingFromPreset && _eqPresetCombo != null)
+        {
+            _eqPresetCombo.SelectionChanged -= EqPreset_Changed;
+            _eqPresetCombo.SelectedItem = null;
+            _eqPresetCombo.SelectionChanged += EqPreset_Changed;
+        }
+        SaveEqSettings();
+    }
+
+    private void EqPreamp_Changed(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        float db = (float)e.NewValue;
+        _player.SetEqPreamp(db);
+        if (_eqPreampLabel != null) _eqPreampLabel.Text = $"{db:0.#} dB";
+        SaveEqSettings();
+    }
+
+    private void EqReset_Click(object sender, RoutedEventArgs e)
+    {
+        _eqPresetCombo!.SelectedItem = "Flat";
+        if (_eqPreampSlider != null) _eqPreampSlider.Value = 0;
+        _player.SetEqPreamp(0);
+    }
+
+    private void SaveEqSettings()
+    {
+        var current = SettingsManager.Load();
+        SettingsManager.Save(current with
+        {
+            EqEnabled = _player.EqEnabled,
+            EqPreset = _eqPresetCombo?.SelectedItem as string ?? "Flat",
+            EqBands = _player.GetEqGains(),
+            EqPreamp = _player.EqPreampDb
+        });
     }
 
     // -- Visualizer -----------------------------------------------
@@ -3044,13 +3363,13 @@ public sealed partial class MainWindow : Window
             LibraryManager.ResetLibrary();
             _allTracks.Clear();
             _displayedTracks.Clear();
+            RefreshLibraryWindow();
             _queue.Clear();
             _viewMode = ViewMode.Library;
             _currentPlaylist = null;
             UpdateNavigation();
             ApplyFilterAndSort();
         }, isDestructive: true));
-
         panel.Children.Add(ActionPanel.CreateSeparator());
 
         // Backdrop section
@@ -3114,6 +3433,16 @@ public sealed partial class MainWindow : Window
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
+        // Accent color section
+        panel.Children.Add(ActionPanel.CreateSectionHeader("Accent Color"));
+        panel.Children.Add(ActionPanel.CreateButton("\uE790", "Choose Accent...", [], () =>
+        {
+            flyout.Hide();
+            ShowAccentColorFlyout(anchor);
+        }));
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
         // Visualizer FPS
         panel.Children.Add(ActionPanel.CreateSectionHeader("Visualizer"));
 
@@ -3166,6 +3495,109 @@ public sealed partial class MainWindow : Window
 
         flyout.Content = panel;
         flyout.ShowAt(anchor);
+    }
+
+    private void OpenLibraryWindow()
+    {
+        if (_libraryWindow != null)
+        {
+            RefreshLibraryWindow();
+            SyncLibraryWindowBounds();
+            _libraryWindow.Activate();
+            return;
+        }
+
+        _libraryWindow = new LibraryWindow();
+        _libraryWindow.Closed += LibraryWindow_Closed;
+        RefreshLibraryWindow();
+        SyncLibraryWindowBounds();
+        ApplyPinToLibraryWindow();
+        _libraryWindow.Activate();
+    }
+
+    private void LibraryWindow_Closed(object sender, WindowEventArgs args)
+    {
+        if (_libraryWindow == null) return;
+        _libraryWindow.Closed -= LibraryWindow_Closed;
+        _libraryWindow = null;
+    }
+
+    private void CloseLibraryWindow()
+    {
+        if (_libraryWindow == null) return;
+        _libraryWindow.Closed -= LibraryWindow_Closed;
+        _libraryWindow.Close();
+        _libraryWindow = null;
+    }
+
+    private void RefreshLibraryWindow()
+    {
+        if (_libraryWindow == null) return;
+        _libraryWindow.SetRows(BuildLibraryRows());
+    }
+
+    private List<LibraryRow> BuildLibraryRows()
+    {
+        var folderPathById = LibraryManager.GetFolders()
+            .ToDictionary(f => f.Id, f => f.Path);
+
+        return _allTracks
+            .Select(t => new LibraryRow(
+                t.Title,
+                folderPathById.TryGetValue(t.FolderId, out var path)
+                    ? path
+                    : $"Unknown folder ({t.FolderId})"))
+            .ToList();
+    }
+
+    private void MainAppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (_libraryWindow == null) return;
+        if (args.DidPositionChange || args.DidSizeChange)
+            SyncLibraryWindowBounds();
+    }
+
+    private void SyncLibraryWindowBounds()
+    {
+        if (_libraryWindow == null) return;
+
+        var mainPos = AppWindow.Position;
+        var mainSize = AppWindow.Size;
+        var width = Math.Max(mainSize.Width + 180, 560);
+        var height = mainSize.Height;
+
+        var displayArea = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
+        var workArea = displayArea.WorkArea;
+
+        var rightX = mainPos.X + mainSize.Width;
+        int targetX;
+        if (rightX + width <= workArea.X + workArea.Width)
+        {
+            // Prefer attaching on the right.
+            targetX = rightX;
+        }
+        else
+        {
+            // Fallback: attach on the left if the right side is out of bounds.
+            targetX = mainPos.X - width;
+            if (targetX < workArea.X)
+            {
+                var maxX = Math.Max(workArea.X, workArea.X + workArea.Width - width);
+                targetX = Math.Clamp(rightX, workArea.X, maxX);
+            }
+        }
+
+        var maxY = Math.Max(workArea.Y, workArea.Y + workArea.Height - height);
+        var targetY = Math.Clamp(mainPos.Y, workArea.Y, maxY);
+
+        _libraryWindow.AppWindow.MoveAndResize(
+            new Windows.Graphics.RectInt32(targetX, targetY, width, height));
+    }
+
+    private void ApplyPinToLibraryWindow()
+    {
+        if (_libraryWindow?.AppWindow.Presenter is OverlappedPresenter presenter)
+            presenter.IsAlwaysOnTop = _isPinnedOnTop;
     }
 
     private async void ScanAllFoldersAsync()
@@ -3458,6 +3890,213 @@ public sealed partial class MainWindow : Window
         flyout.Content = panel;
     }
 
+    private void ShowAccentColorFlyout(FrameworkElement anchor)
+    {
+        var flyout = new Flyout();
+        flyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle(minWidth: 280, maxWidth: 320);
+
+        var panel = new StackPanel { Spacing = 8 };
+
+        // Header
+        var headerGrid = new Grid();
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var backBtn = new Button
+        {
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(4),
+            Content = new FontIcon { Glyph = "\uE72B", FontSize = 12 }
+        };
+        backBtn.Click += (_, _) =>
+        {
+            flyout.Hide();
+            ShowSettingsFlyout(anchor);
+        };
+        Grid.SetColumn(backBtn, 0);
+        var titleText = new TextBlock
+        {
+            Text = "Accent Color",
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+        Grid.SetColumn(titleText, 1);
+        headerGrid.Children.Add(backBtn);
+        headerGrid.Children.Add(titleText);
+        panel.Children.Add(headerGrid);
+
+        var currentAccent = SettingsManager.Load().AccentColor;
+
+        // Color grid: 6 columns
+        const int columns = 6;
+        var grid = new Grid { Margin = new Thickness(0, 4, 0, 4) };
+        for (int c = 0; c < columns; c++)
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        int rows = (int)Math.Ceiling(ThemeHelper.AccentPresets.Length / (double)columns);
+        for (int r = 0; r < rows; r++)
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        for (int i = 0; i < ThemeHelper.AccentPresets.Length; i++)
+        {
+            var (name, hex) = ThemeHelper.AccentPresets[i];
+            int row = i / columns;
+            int col = i % columns;
+
+            bool isSystem = string.IsNullOrEmpty(hex);
+            bool isSelected = (isSystem && string.IsNullOrEmpty(currentAccent))
+                           || (!isSystem && hex.Equals(currentAccent, StringComparison.OrdinalIgnoreCase));
+
+            var swatch = new Button
+            {
+                Width = 36,
+                Height = 36,
+                CornerRadius = new CornerRadius(18),
+                Padding = new Thickness(0),
+                Margin = new Thickness(3),
+                BorderThickness = new Thickness(isSelected ? 2 : 0),
+                BorderBrush = isSelected
+                    ? new SolidColorBrush(Microsoft.UI.Colors.White)
+                    : null,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                Tag = hex
+            };
+
+            if (isSystem)
+            {
+                // System swatch: gradient-like icon
+                swatch.Background = ThemeHelper.Brush("AccentFillColorDefaultBrush");
+                swatch.Content = new FontIcon
+                {
+                    Glyph = "\uE770",
+                    FontSize = 14,
+                    Foreground = new SolidColorBrush(Microsoft.UI.Colors.White)
+                };
+            }
+            else
+            {
+                swatch.Background = new SolidColorBrush(ThemeHelper.ParseHexColor(hex));
+                if (isSelected)
+                {
+                    swatch.Content = new FontIcon
+                    {
+                        Glyph = "\uE73E",
+                        FontSize = 12,
+                        Foreground = new SolidColorBrush(Microsoft.UI.Colors.White)
+                    };
+                }
+            }
+
+            ToolTipService.SetToolTip(swatch, name);
+
+            swatch.Click += (s, _) =>
+            {
+                var selectedHex = (s as Button)?.Tag as string ?? "";
+                flyout.Hide();
+                DispatcherQueue.TryEnqueue(() => ApplyAccentAndSave(selectedHex));
+            };
+
+            Grid.SetRow(swatch, row);
+            Grid.SetColumn(swatch, col);
+            grid.Children.Add(swatch);
+        }
+
+        panel.Children.Add(grid);
+
+        // Custom hex input
+        panel.Children.Add(ActionPanel.CreateSeparator());
+        var customGrid = new Grid { Margin = new Thickness(4, 0, 4, 4) };
+        customGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        customGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        customGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var customPreview = new Border
+        {
+            Width = 24, Height = 24, CornerRadius = new CornerRadius(12),
+            BorderThickness = new Thickness(1),
+            BorderBrush = ThemeHelper.Brush("ControlStrokeColorDefaultBrush"),
+            Background = string.IsNullOrEmpty(currentAccent)
+                ? ThemeHelper.Brush("AccentFillColorDefaultBrush")
+                : new SolidColorBrush(ThemeHelper.ParseHexColor(currentAccent)),
+            Margin = new Thickness(0, 0, 8, 0)
+        };
+        Grid.SetColumn(customPreview, 0);
+
+        var customBox = new TextBox
+        {
+            PlaceholderText = "#0078D4",
+            Text = currentAccent,
+            FontSize = 12,
+            MaxLength = 7,
+            Padding = new Thickness(6, 4, 6, 4)
+        };
+        Grid.SetColumn(customBox, 1);
+
+        var applyBtn = new Button
+        {
+            Content = "Apply",
+            Padding = new Thickness(10, 4, 10, 4),
+            Margin = new Thickness(6, 0, 0, 0),
+            FontSize = 12
+        };
+        Grid.SetColumn(applyBtn, 2);
+
+        customBox.TextChanged += (_, _) =>
+        {
+            var text = customBox.Text;
+            if (text.StartsWith('#') && text.Length == 7)
+            {
+                try { customPreview.Background = new SolidColorBrush(ThemeHelper.ParseHexColor(text)); } catch { }
+            }
+        };
+        applyBtn.Click += (_, _) =>
+        {
+            var text = customBox.Text.Trim();
+            if (text.StartsWith('#') && text.Length == 7)
+            {
+                flyout.Hide();
+                DispatcherQueue.TryEnqueue(() => ApplyAccentAndSave(text));
+            }
+        };
+
+        customGrid.Children.Add(customPreview);
+        customGrid.Children.Add(customBox);
+        customGrid.Children.Add(applyBtn);
+        panel.Children.Add(customGrid);
+
+        flyout.Content = panel;
+        flyout.ShowAt(anchor);
+    }
+
+    private void ApplyAccentAndSave(string hexColor)
+    {
+        var s = SettingsManager.Load();
+        SettingsManager.Save(s with { AccentColor = hexColor });
+
+        // Update accent resources in place (no remove/add — safe at runtime)
+        ThemeHelper.ApplyAccentColor(hexColor);
+
+        // Force theme re-resolve: cycle through both explicit themes then back
+        if (Content is FrameworkElement root)
+        {
+            var current = root.RequestedTheme;
+            root.RequestedTheme = ElementTheme.Light;
+            root.RequestedTheme = ElementTheme.Dark;
+            root.RequestedTheme = current;
+        }
+
+        // Rebuild code-behind elements
+        ApplyFilterAndSort();
+        UpdateNavigation();
+        UpdateRepeatIcon();
+        ShuffleIcon.Foreground = _queue.Shuffle
+            ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+            : ThemeHelper.Brush("TextFillColorPrimaryBrush");
+    }
+
     private static Windows.UI.Color ParseColor(string hex)
     {
         hex = hex.TrimStart('#');
@@ -3549,9 +4188,11 @@ public sealed partial class MainWindow : Window
                 ? Visibility.Visible : Visibility.Collapsed;
             var isPodcast = _viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes;
             var isTrackView = _viewMode != ViewMode.Visualizer && _viewMode != ViewMode.MediaControl
-                && _viewMode != ViewMode.Radio && !isPodcast;
+                && _viewMode != ViewMode.Radio && _viewMode != ViewMode.Equalizer && !isPodcast;
             TrackListView.Visibility = isTrackView ? Visibility.Visible : Visibility.Collapsed;
             WaveformContainer.Visibility = _viewMode == ViewMode.Visualizer
+                ? Visibility.Visible : Visibility.Collapsed;
+            EqualizerContainer.Visibility = _viewMode == ViewMode.Equalizer
                 ? Visibility.Visible : Visibility.Collapsed;
             RadioContainer.Visibility = _viewMode == ViewMode.Radio
                 ? Visibility.Visible : Visibility.Collapsed;
@@ -3578,6 +4219,7 @@ public sealed partial class MainWindow : Window
             SearchSortRow.Visibility = Visibility.Collapsed;
             TrackListView.Visibility = Visibility.Collapsed;
             WaveformContainer.Visibility = Visibility.Collapsed;
+            EqualizerContainer.Visibility = Visibility.Collapsed;
             RadioContainer.Visibility = Visibility.Collapsed;
             PodcastContainer.Visibility = Visibility.Collapsed;
             MediaContainer.Visibility = Visibility.Collapsed;
@@ -3611,6 +4253,7 @@ public sealed partial class MainWindow : Window
                 SearchSortRow.Visibility = Visibility.Collapsed;
                 TrackListView.Visibility = Visibility.Collapsed;
                 WaveformContainer.Visibility = Visibility.Collapsed;
+                EqualizerContainer.Visibility = Visibility.Collapsed;
                 MediaContainer.Visibility = Visibility.Collapsed;
                 BottomBar.Visibility = Visibility.Collapsed;
                 MiniPlayerBar.Visibility = Visibility.Collapsed;
@@ -3625,6 +4268,7 @@ public sealed partial class MainWindow : Window
                 SearchSortRow.Visibility = Visibility.Collapsed;
                 TrackListView.Visibility = Visibility.Collapsed;
                 WaveformContainer.Visibility = Visibility.Collapsed;
+                EqualizerContainer.Visibility = Visibility.Collapsed;
                 MediaContainer.Visibility = Visibility.Collapsed;
                 BottomBar.Visibility = Visibility.Collapsed;
                 MiniPlayerBar.Visibility = Visibility.Visible;
@@ -3738,6 +4382,7 @@ public sealed partial class MainWindow : Window
 
         if (AppWindow.Presenter is OverlappedPresenter presenter)
             presenter.IsAlwaysOnTop = _isPinnedOnTop;
+        ApplyPinToLibraryWindow();
 
         PinIcon.Glyph = _isPinnedOnTop ? "\uE842" : "\uE840";
     }
@@ -3769,6 +4414,7 @@ public sealed partial class MainWindow : Window
             Close();
         else
         {
+            CloseLibraryWindow();
             ShowWindow(_hwnd, 0); // Hide to tray
             _isVisible = false;
             SuspendTimers();
@@ -3810,6 +4456,7 @@ public sealed partial class MainWindow : Window
     {
         if (_isVisible)
         {
+            CloseLibraryWindow();
             ShowWindow(_hwnd, 0); // SW_HIDE
             _isVisible = false;
             SuspendTimers();

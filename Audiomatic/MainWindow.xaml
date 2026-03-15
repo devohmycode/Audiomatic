@@ -446,6 +446,12 @@
             </ListView>
         </Grid>
 
+        <!-- Row 7: Equalizer (shown when Equalizer view is active) -->
+        <ScrollViewer x:Name="EqualizerContainer" Grid.Row="7" Visibility="Collapsed"
+                      Padding="14,0">
+            <StackPanel x:Name="EqualizerPanel" Spacing="10"/>
+        </ScrollViewer>
+
         <!-- Row 7: Media control (shown when Media view is active) -->
         <ScrollViewer x:Name="MediaContainer" Grid.Row="7" Visibility="Collapsed"
                       Padding="6,0">
