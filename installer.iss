@@ -1,6 +1,6 @@
 [Setup]
 AppName=Audiomatic
-AppVersion=0.0.4
+AppVersion=0.0.5
 AppPublisher=OhMyCode
 DefaultDirName={localappdata}\Programs\Audiomatic
 DefaultGroupName=Audiomatic
