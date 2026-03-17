@@ -30,6 +30,14 @@ public sealed class AudioPlayerService : IDisposable
     private SpeedControlSampleProvider? _speedProvider;
     private float _playbackSpeed = 1.0f;
 
+    // Gapless playback
+    private GaplessSampleProvider? _gaplessProvider;
+    private AudioFileReader? _nextAudioReader;
+    private Equalizer? _nextEqualizer;
+    private SpeedControlSampleProvider? _nextSpeedProvider;
+    private TrackInfo? _nextTrack;
+    private bool _gaplessTransitioning;
+
     // NAudio-supported but not natively by MediaPlayer
     private static readonly HashSet<string> NAudioOnlyExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".ape", ".aiff" };
@@ -42,6 +50,8 @@ public sealed class AudioPlayerService : IDisposable
     public event Action<string>? MediaFailed;
     public event Action<TimeSpan>? PositionChanged;
     public event Action<bool>? BufferingChanged;
+    /// <summary>Fired when gapless transition occurs — the next track started seamlessly.</summary>
+    public event Action<TrackInfo>? GaplessTransitioned;
 
     public TrackInfo? CurrentTrack { get; private set; }
     public bool IsPlaying { get; private set; }
@@ -154,11 +164,23 @@ public sealed class AudioPlayerService : IDisposable
 
             _audioReader.Volume = _isMuted ? 0f : (float)_volume;
             _speedProvider = new SpeedControlSampleProvider(_equalizer) { Speed = _playbackSpeed };
+
+            // Wrap in gapless provider
+            _gaplessProvider = new GaplessSampleProvider(_speedProvider);
+            _gaplessProvider.SourceTransitioned += OnGaplessTransition;
+            _gaplessProvider.PlaybackEnded += () =>
+            {
+                IsPlaying = false;
+                _dispatcherQueue?.TryEnqueue(() => MediaEnded?.Invoke());
+            };
+
             _waveOut = new WasapiOut();
-            _waveOut.Init(new NAudio.Wave.SampleProviders.SampleToWaveProvider16(_speedProvider));
+            _waveOut.Init(new NAudio.Wave.SampleProviders.SampleToWaveProvider16(_gaplessProvider));
             _waveOut.PlaybackStopped += (_, _) =>
             {
-                if (_audioReader != null && _audioReader.CurrentTime >= _audioReader.TotalTime - TimeSpan.FromMilliseconds(500))
+                // Only fire MediaEnded for non-gapless stops (e.g., user pressed stop)
+                if (!_gaplessTransitioning && _audioReader != null
+                    && _audioReader.CurrentTime >= _audioReader.TotalTime - TimeSpan.FromMilliseconds(500))
                 {
                     IsPlaying = false;
                     _dispatcherQueue?.TryEnqueue(() => MediaEnded?.Invoke());
@@ -176,6 +198,108 @@ public sealed class AudioPlayerService : IDisposable
         catch (Exception ex)
         {
             _dispatcherQueue?.TryEnqueue(() => MediaFailed?.Invoke(ex.Message));
+        }
+    }
+
+    /// <summary>
+    /// Pre-build the audio chain for the next track so it can transition gaplessly.
+    /// Call this when the current track is nearing its end.
+    /// </summary>
+    public void PrepareNextTrack(TrackInfo track)
+    {
+        if (_gaplessProvider == null || !_useNAudio) return;
+        if (_gaplessProvider.HasNext) return; // already prepared
+
+        try
+        {
+            DisposeNextChain();
+            _nextAudioReader = new AudioFileReader(track.Path);
+
+            // Check format compatibility
+            if (_audioReader != null &&
+                (_nextAudioReader.WaveFormat.SampleRate != _audioReader.WaveFormat.SampleRate ||
+                 _nextAudioReader.WaveFormat.Channels != _audioReader.WaveFormat.Channels))
+            {
+                // Incompatible formats — can't do gapless, will fall back to normal transition
+                DisposeNextChain();
+                return;
+            }
+
+            _nextEqualizer = new Equalizer(_nextAudioReader);
+            _nextEqualizer.Enabled = _eqEnabled;
+            _nextEqualizer.SetAllBands(_eqGains);
+            _nextEqualizer.Preamp = DbToLinear(_eqPreampDb);
+
+            _nextAudioReader.Volume = _isMuted ? 0f : (float)_volume;
+            _nextSpeedProvider = new SpeedControlSampleProvider(_nextEqualizer) { Speed = _playbackSpeed };
+
+            _nextTrack = track;
+            _gaplessProvider.QueueNext(_nextSpeedProvider);
+        }
+        catch
+        {
+            DisposeNextChain();
+        }
+    }
+
+    private void OnGaplessTransition()
+    {
+        _gaplessTransitioning = true;
+
+        // Dispose old chain
+        var oldReader = _audioReader;
+        var oldEqualizer = _equalizer;
+
+        // Promote next chain to current
+        _audioReader = _nextAudioReader;
+        _equalizer = _nextEqualizer;
+        _speedProvider = _nextSpeedProvider;
+        _nextAudioReader = null;
+        _nextEqualizer = null;
+        _nextSpeedProvider = null;
+
+        var transitionedTrack = _nextTrack;
+        _nextTrack = null;
+        CurrentTrack = transitionedTrack;
+
+        // Dispose old reader on background thread
+        Task.Run(() =>
+        {
+            try { oldReader?.Dispose(); } catch { }
+        });
+
+        if (transitionedTrack != null)
+        {
+            UpdateSmtc(transitionedTrack);
+            _dispatcherQueue?.TryEnqueue(() =>
+            {
+                GaplessTransitioned?.Invoke(transitionedTrack);
+                MediaOpened?.Invoke();
+            });
+        }
+
+        _gaplessTransitioning = false;
+    }
+
+    private void DisposeNextChain()
+    {
+        try { _nextAudioReader?.Dispose(); } catch { }
+        _nextAudioReader = null;
+        _nextEqualizer = null;
+        _nextSpeedProvider = null;
+        _nextTrack = null;
+    }
+
+    /// <summary>
+    /// Returns how many seconds remain in the current track.
+    /// Returns -1 if not applicable (stream, no track).
+    /// </summary>
+    public double RemainingSeconds
+    {
+        get
+        {
+            if (!_useNAudio || _audioReader == null) return -1;
+            return (_audioReader.TotalTime - _audioReader.CurrentTime).TotalSeconds / _playbackSpeed;
         }
     }
 
@@ -285,6 +409,9 @@ public sealed class AudioPlayerService : IDisposable
     {
         if (_useNAudio)
         {
+            _gaplessProvider?.ClearNext();
+            _gaplessProvider = null;
+            DisposeNextChain();
             _waveOut?.Stop();
             _waveOut?.Dispose();
             _waveOut = null;
@@ -298,6 +425,7 @@ public sealed class AudioPlayerService : IDisposable
         }
         IsPlaying = false;
         IsStream = false;
+        _gaplessTransitioning = false;
         PlaybackStopped?.Invoke();
     }
 
@@ -459,6 +587,7 @@ public sealed class AudioPlayerService : IDisposable
         _positionTimer?.Dispose();
         _positionTimer = null;
         Stop();
+        DisposeNextChain();
         _albumArtStream?.Dispose();
         _albumArtStream = null;
         _mediaPlayer.Dispose();

@@ -211,6 +211,7 @@ public sealed partial class MainWindow : Window
         _player.MediaFailed += OnMediaFailed;
         _player.PositionChanged += OnPositionChanged;
         _player.BufferingChanged += OnBufferingChanged;
+        _player.GaplessTransitioned += OnGaplessTransitioned;
         VolumeSlider.Value = settings.Volume * 100;
         _player.Volume = settings.Volume;
         _sortBy = settings.SortBy;
@@ -364,6 +365,9 @@ public sealed partial class MainWindow : Window
                 "duration" => _sortAscending
                     ? [.. _displayedTracks.OrderBy(t => t.DurationMs)]
                     : [.. _displayedTracks.OrderByDescending(t => t.DurationMs)],
+                "bpm" => _sortAscending
+                    ? [.. _displayedTracks.OrderBy(t => t.Bpm == 0 ? int.MaxValue : t.Bpm).ThenBy(t => t.Title)]
+                    : [.. _displayedTracks.OrderByDescending(t => t.Bpm).ThenBy(t => t.Title)],
                 _ => _sortAscending
                     ? [.. _displayedTracks.OrderBy(t => t.Title)]
                     : [.. _displayedTracks.OrderByDescending(t => t.Title)]
@@ -444,10 +448,13 @@ public sealed partial class MainWindow : Window
             }
             Grid.SetColumn(info, 1);
 
-            // Duration
+            // BPM + Duration
+            var durationText = track.Bpm > 0
+                ? $"{track.Bpm} BPM \u00B7 {track.DurationFormatted}"
+                : track.DurationFormatted;
             var dur = new TextBlock
             {
-                Text = track.DurationFormatted,
+                Text = durationText,
                 FontSize = 11,
                 Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 VerticalAlignment = VerticalAlignment.Center
@@ -640,6 +647,22 @@ public sealed partial class MainWindow : Window
             _episodeProgress[_currentEpisode.AudioUrl] = pos.TotalSeconds;
             PodcastService.SaveProgress(_episodeProgress);
         }
+
+        // Gapless: pre-load next track when ~5s remain
+        var remaining = _player.RemainingSeconds;
+        if (remaining > 0 && remaining < 5 && _currentEpisode == null)
+        {
+            var nextTrack = _queue.PeekNext();
+            if (nextTrack != null)
+                _player.PrepareNextTrack(nextTrack);
+        }
+    }
+
+    private void OnGaplessTransitioned(TrackInfo track)
+    {
+        // Advance the queue index to match the gapless transition
+        _queue.Next();
+        UpdateNowPlaying(track);
     }
 
     private void SavePodcastProgressNow()
@@ -986,6 +1009,7 @@ public sealed partial class MainWindow : Window
         SortArtist.IsChecked = _sortBy == "artist";
         SortAlbum.IsChecked = _sortBy == "album";
         SortDuration.IsChecked = _sortBy == "duration";
+        SortBpm.IsChecked = _sortBy == "bpm";
     }
 
     private void SortDirection_Click(object sender, RoutedEventArgs e)
@@ -1392,8 +1416,16 @@ public sealed partial class MainWindow : Window
             }
         }));
 
-        // Edit tags
+        // BPM detection
         panel.Children.Add(ActionPanel.CreateSeparator());
+        var bpmLabel = track.Bpm > 0 ? $"{track.Bpm} BPM" : "Detect BPM";
+        panel.Children.Add(ActionPanel.CreateButton("\uE916", bpmLabel, [], async () =>
+        {
+            flyout.Hide();
+            await DetectAndSaveBpmAsync(track);
+        }));
+
+        // Edit tags
         panel.Children.Add(ActionPanel.CreateButton("\uE70F", "Edit Tags", [], () =>
         {
             flyout.Content = BuildMetadataEditorContent(flyout, track);
@@ -1515,6 +1547,34 @@ public sealed partial class MainWindow : Window
         }, isDestructive: true));
 
         return panel;
+    }
+
+    private async Task DetectAndSaveBpmAsync(TrackInfo track)
+    {
+        var bpm = await Task.Run(() => BpmDetector.Detect(track.Path));
+        if (bpm > 0)
+        {
+            track.Bpm = bpm;
+            LibraryManager.UpdateTrackBpm(track.Id, bpm);
+
+            // Write BPM to file tag (best effort)
+            try
+            {
+                await Task.Run(() =>
+                {
+                    using var tagFile = TagLib.File.Create(track.Path);
+                    tagFile.Tag.BeatsPerMinute = (uint)bpm;
+                    tagFile.Save();
+                });
+            }
+            catch { }
+
+            // Update in-memory track
+            var mem = _allTracks.FirstOrDefault(t => t.Id == track.Id);
+            if (mem != null) mem.Bpm = bpm;
+
+            RebuildTrackList();
+        }
     }
 
     private StackPanel BuildMetadataEditorContent(Flyout flyout, TrackInfo track)
@@ -4371,18 +4431,41 @@ public sealed partial class MainWindow : Window
         });
 
         // Tint Color
-        var tintColorPreview = new Border
+        var tintColorPreview = new Button
         {
             Width = 28, Height = 28, CornerRadius = new CornerRadius(4),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(1), Padding = new Thickness(0),
+            MinWidth = 0, MinHeight = 0,
             BorderBrush = ThemeHelper.Brush("ControlStrokeColorDefaultBrush"),
             Background = new SolidColorBrush(ParseColor(settings.TintColor))
         };
+        ToolTipService.SetToolTip(tintColorPreview, "Choose color");
         var tintColorBox = new TextBox
         {
             Text = settings.TintColor, FontSize = 12, MaxLength = 7,
             MinWidth = 0
         };
+
+        // Color picker flyout for tint
+        var tintPickerFlyout = new Flyout();
+        var tintPicker = new ColorPicker
+        {
+            Color = ParseColor(settings.TintColor),
+            IsAlphaEnabled = false,
+            IsHexInputVisible = true,
+            IsColorSpectrumVisible = true,
+            IsColorPreviewVisible = true,
+            IsMoreButtonVisible = false
+        };
+        tintPicker.ColorChanged += (_, args) =>
+        {
+            var c = args.NewColor;
+            var hex = $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+            tintColorBox.Text = hex;
+            tintColorPreview.Background = new SolidColorBrush(c);
+        };
+        tintPickerFlyout.Content = tintPicker;
+        tintColorPreview.Flyout = tintPickerFlyout;
 
         var tintColorGrid = new Grid
         {
@@ -4407,18 +4490,41 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(tintColorGrid);
 
         // Fallback Color
-        var fallbackColorPreview = new Border
+        var fallbackColorPreview = new Button
         {
             Width = 28, Height = 28, CornerRadius = new CornerRadius(4),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(1), Padding = new Thickness(0),
+            MinWidth = 0, MinHeight = 0,
             BorderBrush = ThemeHelper.Brush("ControlStrokeColorDefaultBrush"),
             Background = new SolidColorBrush(ParseColor(settings.FallbackColor))
         };
+        ToolTipService.SetToolTip(fallbackColorPreview, "Choose color");
         var fallbackColorBox = new TextBox
         {
             Text = settings.FallbackColor, FontSize = 12, MaxLength = 7,
             MinWidth = 0
         };
+
+        // Color picker flyout for fallback
+        var fallbackPickerFlyout = new Flyout();
+        var fallbackPicker = new ColorPicker
+        {
+            Color = ParseColor(settings.FallbackColor),
+            IsAlphaEnabled = false,
+            IsHexInputVisible = true,
+            IsColorSpectrumVisible = true,
+            IsColorPreviewVisible = true,
+            IsMoreButtonVisible = false
+        };
+        fallbackPicker.ColorChanged += (_, args) =>
+        {
+            var c = args.NewColor;
+            var hex = $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+            fallbackColorBox.Text = hex;
+            fallbackColorPreview.Background = new SolidColorBrush(c);
+        };
+        fallbackPickerFlyout.Content = fallbackPicker;
+        fallbackColorPreview.Flyout = fallbackPickerFlyout;
 
         var fallbackColorGrid = new Grid
         {

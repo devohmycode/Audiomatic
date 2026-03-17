@@ -19,6 +19,8 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 - **Playback controls**: Play/Pause, Previous, Next, timeline seeking
 - **Volume control** with mute toggle and dynamic icon states
 - **Shuffle** (Fisher-Yates) and **Repeat** modes (None / All / One)
+- **Gapless playback** — seamless track transitions with pre-loaded next track chain; automatic fallback for incompatible formats
+- **BPM detection** — reads BPM from file tags or analyzes audio on demand (multi-band onset detection + comb filter); displayed in track list and sortable
 - **Playback speed** — adjustable from 0.25x to 4x with 9 presets, applied to both local files and streams
 - **Sleep timer** — auto-stop playback after 15, 30, 45, 60, or 90 minutes, accessible from the settings menu
 
@@ -77,7 +79,7 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 ### Search & Sort
 
 - Real-time filtering by title, artist, or album
-- Sort by Title, Artist, Album, or Duration
+- Sort by Title, Artist, Album, Duration, or BPM
 - Ascending/Descending toggle
 
 ![Audiomatic1](https://res.cloudinary.com/dptrimoqv/image/upload/v1773226483/873shots_so_u3ecyr.png)
@@ -125,7 +127,7 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 - **Animated transitions** — Fluent slide+fade animations between views
 - **Collapse cycling** with smooth animation anchored to bottom (`Ctrl+L`)
 - **Always-on-Top** pin mode
-- **Backdrop options**: Acrylic, Mica, Mica Alt, None
+- **Backdrop options**: Acrylic, Custom Acrylic (tint/fallback with ColorPicker, luminosity, Base/Thin style), Mica, Mica Alt, None
 - **Theme support**: System, Light, Dark
 - **Custom accent colors** — 24 preset color swatches + custom hex input, applied across all themes
 - **Window position** remembered across restarts

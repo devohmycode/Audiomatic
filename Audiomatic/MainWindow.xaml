@@ -346,6 +346,7 @@
                         <ToggleMenuFlyoutItem x:Name="SortArtist" Text="Artist" Click="Sort_Click" Tag="artist"/>
                         <ToggleMenuFlyoutItem x:Name="SortAlbum" Text="Album" Click="Sort_Click" Tag="album"/>
                         <ToggleMenuFlyoutItem x:Name="SortDuration" Text="Duration" Click="Sort_Click" Tag="duration"/>
+                        <ToggleMenuFlyoutItem x:Name="SortBpm" Text="BPM" Click="Sort_Click" Tag="bpm"/>
                         <MenuFlyoutSeparator/>
                         <ToggleMenuFlyoutItem x:Name="SortAscending" Text="Ascending" IsChecked="True" Click="SortDirection_Click"/>
                     </MenuFlyout>
