@@ -33,7 +33,7 @@ public sealed partial class MainWindow : Window
     private bool _sortAscending = true;
 
     // Playlist navigation
-    private enum ViewMode { Library, PlaylistList, PlaylistDetail, Queue, Radio, Podcast, PodcastEpisodes, Visualizer, Equalizer, MediaControl, Albums, AlbumDetail }
+    private enum ViewMode { Library, PlaylistList, PlaylistDetail, Queue, Radio, Podcast, PodcastEpisodes, Visualizer, Equalizer, MediaControl, Albums, AlbumDetail, Artists, ArtistDetail }
     private ViewMode _viewMode = ViewMode.Library;
     private PlaylistInfo? _currentPlaylist;
 
@@ -46,6 +46,8 @@ public sealed partial class MainWindow : Window
     private PodcastInfo? _currentPodcast;
     private PodcastEpisode? _currentEpisode;
     private HashSet<string> _readEpisodes = [];
+    private Dictionary<string, double> _episodeProgress = [];
+    private readonly Dictionary<string, CancellationTokenSource> _podcastDownloads = new();
 
     // Visualizer
     private readonly SpectrumAnalyzer _spectrum = new();
@@ -65,8 +67,9 @@ public sealed partial class MainWindow : Window
     private bool _eqUiBuilt;
     private bool _eqUpdatingFromPreset;
 
-    // Albums
+    // Albums & Artists
     private string? _currentAlbumName;
+    private string? _currentArtistName;
 
     // View transition animation
     private bool _isViewTransitioning;
@@ -75,6 +78,10 @@ public sealed partial class MainWindow : Window
     private Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager? _mediaSessionManager;
     private readonly Dictionary<string, MediaSessionPanel> _mediaSessionPanels = new();
     private DispatcherTimer? _mediaTickTimer;
+
+    // Sleep timer
+    private DispatcherTimer? _sleepTimer;
+    private DateTime _sleepTargetTime;
 
     // Custom acrylic
     private DesktopAcrylicController? _acrylicController;
@@ -199,6 +206,11 @@ public sealed partial class MainWindow : Window
 
         // Set up audio player
         _player.SetDispatcherQueue(DispatcherQueue);
+        _player.MediaOpened += OnMediaOpened;
+        _player.MediaEnded += () => OnMediaEnded();
+        _player.MediaFailed += OnMediaFailed;
+        _player.PositionChanged += OnPositionChanged;
+        _player.BufferingChanged += OnBufferingChanged;
         VolumeSlider.Value = settings.Volume * 100;
         _player.Volume = settings.Volume;
         _sortBy = settings.SortBy;
@@ -216,6 +228,7 @@ public sealed partial class MainWindow : Window
         _radioStations = SettingsManager.LoadRadioStations();
         _podcastSubscriptions = PodcastService.LoadSubscriptions();
         _readEpisodes = PodcastService.LoadReadEpisodes();
+        _episodeProgress = PodcastService.LoadProgress();
 
         // Initialize library and load tracks
         LibraryManager.Initialize();
@@ -269,6 +282,7 @@ public sealed partial class MainWindow : Window
             UnregisterHotKey(_hwnd, HOTKEY_COLLAPSE_ID);
             RemoveTrayIcon();
             _queue.SaveState();
+            SavePodcastProgressNow();
             var s = SettingsManager.Load();
             var pos = AppWindow.Position;
             SettingsManager.Save(s with
@@ -314,7 +328,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (_viewMode == ViewMode.Visualizer || _viewMode == ViewMode.Albums)
+        if (_viewMode == ViewMode.Visualizer || _viewMode == ViewMode.Albums || _viewMode == ViewMode.Artists)
             return;
 
         List<TrackInfo> source = _viewMode == ViewMode.PlaylistDetail && _currentPlaylist != null
@@ -322,6 +336,9 @@ public sealed partial class MainWindow : Window
             : _viewMode == ViewMode.AlbumDetail && _currentAlbumName != null
             ? _allTracks.Where(t => string.Equals(t.Album, _currentAlbumName, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(t => t.TrackNumber).ThenBy(t => t.Title).ToList()
+            : _viewMode == ViewMode.ArtistDetail && _currentArtistName != null
+            ? _allTracks.Where(t => string.Equals(t.Artist, _currentArtistName, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(t => t.Album).ThenBy(t => t.TrackNumber).ThenBy(t => t.Title).ToList()
             : _allTracks;
 
         var query = SearchBox.Text?.Trim() ?? "";
@@ -534,7 +551,8 @@ public sealed partial class MainWindow : Window
 
     private void OnMediaOpened()
     {
-        if (_player.IsStream)
+        // Radio streams show LIVE; podcast streams show normal timeline
+        if (_player.IsStream && _currentEpisode == null)
         {
             _isSeeking = true;
             TimelineSlider.Maximum = 1;
@@ -566,6 +584,9 @@ public sealed partial class MainWindow : Window
         {
             _readEpisodes.Add(_currentEpisode.AudioUrl);
             PodcastService.SaveReadEpisodes(_readEpisodes);
+            // Clear saved progress — episode is finished
+            _episodeProgress.Remove(_currentEpisode.AudioUrl);
+            PodcastService.SaveProgress(_episodeProgress);
             _currentEpisode = null;
             RefreshEpisodeList();
         }
@@ -602,6 +623,8 @@ public sealed partial class MainWindow : Window
             RadioStatusText.Text = isBuffering ? "Buffering..." : "Playing: " + (RadioUrlBox.Text?.Trim() ?? "");
     }
 
+    private int _progressSaveCounter;
+
     private void OnPositionChanged(TimeSpan pos)
     {
         if (_isSeeking) return;
@@ -610,10 +633,27 @@ public sealed partial class MainWindow : Window
         PositionText.Text = FormatTime(pos);
         _isSeeking = false;
 
+        // Save podcast episode progress every ~5s (20 ticks × 250ms)
+        if (_currentEpisode != null && pos.TotalSeconds > 1 && ++_progressSaveCounter >= 20)
+        {
+            _progressSaveCounter = 0;
+            _episodeProgress[_currentEpisode.AudioUrl] = pos.TotalSeconds;
+            PodcastService.SaveProgress(_episodeProgress);
+        }
+    }
+
+    private void SavePodcastProgressNow()
+    {
+        if (_currentEpisode != null && _player.Position.TotalSeconds > 1)
+        {
+            _episodeProgress[_currentEpisode.AudioUrl] = _player.Position.TotalSeconds;
+            PodcastService.SaveProgress(_episodeProgress);
+        }
     }
 
     private void UpdateNowPlaying(TrackInfo track)
     {
+        SavePodcastProgressNow();
         _currentEpisode = null; // Clear podcast episode when playing a track
         TrackTitle.Text = track.Title;
         TrackArtist.Text = track.Artist;
@@ -851,6 +891,46 @@ public sealed partial class MainWindow : Window
             : ThemeHelper.Brush("TextFillColorPrimaryBrush");
     }
 
+    // -- Playback Speed -------------------------------------------
+
+    private static readonly float[] SpeedPresets = [0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f];
+
+    private void Speed_Click(object sender, RoutedEventArgs e)
+    {
+        var flyout = new Flyout();
+        flyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle(minWidth: 120, maxWidth: 160);
+
+        var panel = new StackPanel { Spacing = 0 };
+        panel.Children.Add(ActionPanel.CreateSectionHeader("Speed"));
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        foreach (var speed in SpeedPresets)
+        {
+            var s = speed;
+            var label = s == 1.0f ? "Normal" : $"{s:0.##}x";
+            var isActive = MathF.Abs(_player.PlaybackSpeed - s) < 0.01f;
+            panel.Children.Add(ActionPanel.CreateButton(
+                isActive ? "\uE73E" : "\uE8D7", label, [], () =>
+                {
+                    _player.PlaybackSpeed = s;
+                    UpdateSpeedText();
+                    flyout.Hide();
+                }, isActive: isActive));
+        }
+
+        flyout.Content = panel;
+        flyout.ShowAt(sender as FrameworkElement ?? SpeedButton);
+    }
+
+    private void UpdateSpeedText()
+    {
+        var speed = _player.PlaybackSpeed;
+        SpeedText.Text = MathF.Abs(speed - 1.0f) < 0.01f ? "1x" : $"{speed:0.##}x";
+        SpeedText.Foreground = MathF.Abs(speed - 1.0f) < 0.01f
+            ? ThemeHelper.Brush("TextFillColorPrimaryBrush")
+            : ThemeHelper.Brush("AccentTextFillColorPrimaryBrush");
+    }
+
     // -- Timeline -------------------------------------------------
 
     private void TimelineSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
@@ -1021,11 +1101,14 @@ public sealed partial class MainWindow : Window
     private void UpdateNavigation()
     {
         // Toggle tab bar vs detail headers
-        var isDetailView = _viewMode == ViewMode.PlaylistDetail || _viewMode == ViewMode.AlbumDetail;
+        var isDetailView = _viewMode == ViewMode.PlaylistDetail || _viewMode == ViewMode.AlbumDetail
+            || _viewMode == ViewMode.ArtistDetail;
         NavTabs.Visibility = !isDetailView ? Visibility.Visible : Visibility.Collapsed;
         PlaylistHeader.Visibility = _viewMode == ViewMode.PlaylistDetail
             ? Visibility.Visible : Visibility.Collapsed;
         AlbumHeader.Visibility = _viewMode == ViewMode.AlbumDetail
+            ? Visibility.Visible : Visibility.Collapsed;
+        ArtistHeader.Visibility = _viewMode == ViewMode.ArtistDetail
             ? Visibility.Visible : Visibility.Collapsed;
         NewPlaylistBtn.Visibility = _viewMode == ViewMode.PlaylistList
             ? Visibility.Visible : Visibility.Collapsed;
@@ -1048,20 +1131,21 @@ public sealed partial class MainWindow : Window
         SetTab(NavRadioText, _viewMode == ViewMode.Radio);
         SetTab(NavPodcastText, _viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes);
         SetTab(NavMoreText, _viewMode == ViewMode.Visualizer || _viewMode == ViewMode.Equalizer
-            || _viewMode == ViewMode.MediaControl || _viewMode == ViewMode.Albums || _viewMode == ViewMode.AlbumDetail);
+            || _viewMode == ViewMode.MediaControl || _viewMode == ViewMode.Albums || _viewMode == ViewMode.AlbumDetail
+            || _viewMode == ViewMode.Artists || _viewMode == ViewMode.ArtistDetail);
 
         // Show/hide search & sort
         SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail
-            || _viewMode == ViewMode.AlbumDetail)
+            || _viewMode == ViewMode.AlbumDetail || _viewMode == ViewMode.ArtistDetail)
             ? Visibility.Visible : Visibility.Collapsed;
 
         // Show/hide content containers based on view mode
         var isPodcast = _viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes;
         var isTrackView = _viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistList
             || _viewMode == ViewMode.PlaylistDetail || _viewMode == ViewMode.Queue
-            || _viewMode == ViewMode.AlbumDetail;
+            || _viewMode == ViewMode.AlbumDetail || _viewMode == ViewMode.ArtistDetail;
         TrackListView.Visibility = isTrackView ? Visibility.Visible : Visibility.Collapsed;
-        AlbumsGridView.Visibility = _viewMode == ViewMode.Albums
+        AlbumsGridView.Visibility = (_viewMode == ViewMode.Albums || _viewMode == ViewMode.Artists)
             ? Visibility.Visible : Visibility.Collapsed;
         WaveformContainer.Visibility = _viewMode == ViewMode.Visualizer
             ? Visibility.Visible : Visibility.Collapsed;
@@ -1079,6 +1163,8 @@ public sealed partial class MainWindow : Window
             PlaylistNameText.Text = _currentPlaylist.Name;
         if (_currentAlbumName != null)
             AlbumNameText.Text = _currentAlbumName;
+        if (_currentArtistName != null)
+            ArtistNameText.Text = _currentArtistName;
     }
 
     private void AnimateViewTransition(Action buildNewContent, bool slideFromRight = true)
@@ -1091,7 +1177,7 @@ public sealed partial class MainWindow : Window
             : _viewMode == ViewMode.Equalizer ? EqualizerContainer
             : _viewMode == ViewMode.MediaControl ? MediaContainer
             : _viewMode == ViewMode.Radio ? RadioContainer
-            : _viewMode == ViewMode.Albums ? AlbumsGridView
+            : (_viewMode == ViewMode.Albums || _viewMode == ViewMode.Artists) ? AlbumsGridView
             : (_viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes) ? PodcastContainer
             : TrackListView;
 
@@ -1135,7 +1221,7 @@ public sealed partial class MainWindow : Window
                 : _viewMode == ViewMode.Equalizer ? EqualizerContainer
                 : _viewMode == ViewMode.MediaControl ? MediaContainer
                 : _viewMode == ViewMode.Radio ? RadioContainer
-                : _viewMode == ViewMode.Albums ? AlbumsGridView
+                : (_viewMode == ViewMode.Albums || _viewMode == ViewMode.Artists) ? AlbumsGridView
                 : (_viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes) ? PodcastContainer
                 : TrackListView;
 
@@ -2061,6 +2147,21 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async Task LoadUnreadBadgeAsync(PodcastInfo podcast, Border badge)
+    {
+        try
+        {
+            var episodes = await PodcastService.FetchEpisodesAsync(podcast.FeedUrl, limit: 500);
+            int unread = episodes.Count(ep => !_readEpisodes.Contains(ep.AudioUrl));
+            if (unread > 0)
+            {
+                ((TextBlock)badge.Child).Text = unread.ToString();
+                badge.Visibility = Visibility.Visible;
+            }
+        }
+        catch { /* network error — no badge */ }
+    }
+
     private void BuildPodcastSubscriptionList()
     {
         PodcastBackBtn.Visibility = Visibility.Collapsed;
@@ -2137,7 +2238,7 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(info, 1);
         grid.Children.Add(info);
 
-        // Subscribe/Subscribed indicator
+        // Right column: badge or subscribe icon
         bool isSubscribed = _podcastSubscriptions.Any(p => p.FeedUrl == podcast.FeedUrl);
         if (isSearchResult)
         {
@@ -2152,6 +2253,30 @@ public sealed partial class MainWindow : Window
             };
             Grid.SetColumn(subIcon, 2);
             grid.Children.Add(subIcon);
+        }
+        else
+        {
+            // Unread badge — loaded async
+            var badge = new Border
+            {
+                CornerRadius = new CornerRadius(9),
+                MinWidth = 18, Height = 18,
+                Padding = new Thickness(5, 0, 5, 0),
+                Background = ThemeHelper.Brush("AccentFillColorDefaultBrush"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed,
+                Child = new TextBlock
+                {
+                    FontSize = 10,
+                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.White),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
+            };
+            Grid.SetColumn(badge, 2);
+            grid.Children.Add(badge);
+
+            _ = LoadUnreadBadgeAsync(podcast, badge);
         }
 
         // Context flyout
@@ -2238,7 +2363,7 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            var episodes = await PodcastService.FetchEpisodesAsync(podcast.FeedUrl);
+            var episodes = await PodcastService.FetchEpisodesAsync(podcast.FeedUrl, limit: 200);
             PodcastListView.Items.Clear();
 
             // Subscribe button at the top
@@ -2316,6 +2441,9 @@ public sealed partial class MainWindow : Window
     private Grid BuildEpisodeItem(PodcastEpisode episode)
     {
         bool isRead = _readEpisodes.Contains(episode.AudioUrl);
+        bool isDownloaded = PodcastService.IsDownloaded(episode.AudioUrl);
+        bool isDownloading = _podcastDownloads.ContainsKey(episode.AudioUrl);
+        bool hasProgress = _episodeProgress.TryGetValue(episode.AudioUrl, out var progressSec) && progressSec > 1;
 
         var grid = new Grid { Tag = episode, Padding = new Thickness(4, 6, 4, 6) };
         if (isRead) grid.Opacity = 0.5;
@@ -2347,6 +2475,29 @@ public sealed partial class MainWindow : Window
             {
                 Text = episode.Duration, FontSize = 11,
                 Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush")
+            });
+        if (isDownloaded)
+        {
+            meta.Children.Add(new FontIcon
+            {
+                Glyph = "\uE896", FontSize = 10,
+                Foreground = ThemeHelper.Brush("AccentTextFillColorPrimaryBrush"),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+        }
+        else if (isDownloading)
+            meta.Children.Add(new TextBlock
+            {
+                Text = "Downloading...", FontSize = 11,
+                Foreground = ThemeHelper.Brush("AccentTextFillColorPrimaryBrush"),
+                FontStyle = Windows.UI.Text.FontStyle.Italic
+            });
+        if (hasProgress && !isRead)
+            meta.Children.Add(new TextBlock
+            {
+                Text = FormatTime(TimeSpan.FromSeconds(progressSec)),
+                FontSize = 11,
+                Foreground = ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
             });
         if (isRead)
             meta.Children.Add(new TextBlock
@@ -2387,12 +2538,43 @@ public sealed partial class MainWindow : Window
     {
         var panel = new StackPanel { Spacing = 0 };
         bool isRead = _readEpisodes.Contains(episode.AudioUrl);
+        bool isDownloaded = PodcastService.IsDownloaded(episode.AudioUrl);
+        bool isDownloading = _podcastDownloads.ContainsKey(episode.AudioUrl);
 
         panel.Children.Add(ActionPanel.CreateButton("\uE768", "Play", [], () =>
         {
             flyout.Hide();
             _ = PlayPodcastEpisodeAsync(episode);
         }));
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        // Download / Cancel / Delete download
+        if (isDownloading)
+        {
+            panel.Children.Add(ActionPanel.CreateButton("\uE711", "Cancel Download", [], () =>
+            {
+                flyout.Hide();
+                CancelPodcastDownload(episode.AudioUrl);
+            }, isDestructive: true));
+        }
+        else if (isDownloaded)
+        {
+            panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Delete Download", [], () =>
+            {
+                flyout.Hide();
+                PodcastService.DeleteDownload(episode.AudioUrl);
+                RefreshEpisodeList();
+            }, isDestructive: true));
+        }
+        else
+        {
+            panel.Children.Add(ActionPanel.CreateButton("\uE896", "Download", [], () =>
+            {
+                flyout.Hide();
+                _ = DownloadPodcastEpisodeAsync(episode);
+            }));
+        }
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
@@ -2420,6 +2602,44 @@ public sealed partial class MainWindow : Window
         return panel;
     }
 
+    private async Task DownloadPodcastEpisodeAsync(PodcastEpisode episode)
+    {
+        if (_podcastDownloads.ContainsKey(episode.AudioUrl)) return;
+
+        var cts = new CancellationTokenSource();
+        _podcastDownloads[episode.AudioUrl] = cts;
+        RefreshEpisodeList();
+
+        try
+        {
+            await PodcastService.DownloadEpisodeAsync(episode.AudioUrl, ct: cts.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            // Clean up partial file on error
+            PodcastService.DeleteDownload(episode.AudioUrl);
+            TrackArtist.Text = $"Download failed: {ex.Message}";
+        }
+        finally
+        {
+            _podcastDownloads.Remove(episode.AudioUrl);
+            RefreshEpisodeList();
+        }
+    }
+
+    private void CancelPodcastDownload(string audioUrl)
+    {
+        if (_podcastDownloads.TryGetValue(audioUrl, out var cts))
+        {
+            cts.Cancel();
+            cts.Dispose();
+            _podcastDownloads.Remove(audioUrl);
+            PodcastService.DeleteDownload(audioUrl);
+            RefreshEpisodeList();
+        }
+    }
+
     private void RefreshEpisodeList()
     {
         if (_viewMode == ViewMode.PodcastEpisodes && _currentPodcast != null)
@@ -2428,13 +2648,39 @@ public sealed partial class MainWindow : Window
 
     private async Task PlayPodcastEpisodeAsync(PodcastEpisode episode)
     {
-        if (!Uri.TryCreate(episode.AudioUrl, UriKind.Absolute, out var uri)) return;
-
         try
         {
+            SavePodcastProgressNow();
             _player.Stop();
             _currentEpisode = episode;
-            await _player.PlayStreamAsync(uri);
+            _progressSaveCounter = 0;
+
+            // Play from local file if downloaded, otherwise stream
+            if (PodcastService.IsDownloaded(episode.AudioUrl))
+            {
+                var localPath = PodcastService.GetDownloadPath(episode.AudioUrl);
+                var track = new TrackInfo
+                {
+                    Id = -1,
+                    Path = localPath,
+                    Title = episode.Title,
+                    Artist = _currentPodcast?.Name ?? "Podcast",
+                    Album = episode.Published,
+                    DurationMs = 0
+                };
+                await _player.PlayTrackAsync(track);
+            }
+            else
+            {
+                if (!Uri.TryCreate(episode.AudioUrl, UriKind.Absolute, out var uri)) return;
+                await _player.PlayStreamAsync(uri);
+            }
+
+            // Resume from saved progress
+            if (_episodeProgress.TryGetValue(episode.AudioUrl, out var savedPos) && savedPos > 1)
+            {
+                _player.Seek(TimeSpan.FromSeconds(savedPos));
+            }
 
             // Update now-playing display
             TrackTitle.Text = episode.Title;
@@ -2466,6 +2712,9 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(ActionPanel.CreateButton("\uE93F", "Albums", [],
             () => { flyout.Hide(); NavAlbums_Click(sender, e); },
             isActive: _viewMode == ViewMode.Albums || _viewMode == ViewMode.AlbumDetail));
+        panel.Children.Add(ActionPanel.CreateButton("\uE77B", "Artists", [],
+            () => { flyout.Hide(); NavArtists_Click(sender, e); },
+            isActive: _viewMode == ViewMode.Artists || _viewMode == ViewMode.ArtistDetail));
         panel.Children.Add(ActionPanel.CreateButton("\uE9D9", "Visualizer", [],
             () => { flyout.Hide(); NavVisualizer_Click(sender, e); },
             isActive: _viewMode == ViewMode.Visualizer));
@@ -2649,13 +2898,160 @@ public sealed partial class MainWindow : Window
 
     private void AlbumGrid_ItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is not StackPanel card || card.Tag is not string albumName) return;
+        if (e.ClickedItem is not StackPanel card || card.Tag is not string name) return;
 
-        _currentAlbumName = albumName;
-        _viewMode = ViewMode.AlbumDetail;
+        if (_viewMode == ViewMode.Artists)
+        {
+            _currentArtistName = name;
+            _viewMode = ViewMode.ArtistDetail;
+            _currentPlaylist = null;
+            UpdateNavigation();
+            AnimateViewTransition(() => ApplyFilterAndSort());
+        }
+        else
+        {
+            _currentAlbumName = name;
+            _viewMode = ViewMode.AlbumDetail;
+            _currentPlaylist = null;
+            UpdateNavigation();
+            AnimateViewTransition(() => ApplyFilterAndSort());
+        }
+    }
+
+    // -- Artists ---------------------------------------------------
+
+    private void NavArtists_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewMode == ViewMode.Artists) return;
+        _viewMode = ViewMode.Artists;
         _currentPlaylist = null;
+        _currentArtistName = null;
         UpdateNavigation();
-        AnimateViewTransition(() => ApplyFilterAndSort());
+        UpdateSpectrumTimer();
+        UpdateMediaTimer();
+        AnimateViewTransition(() => BuildArtistsGrid());
+    }
+
+    private void BuildArtistsGrid()
+    {
+        AlbumsGridView.Items.Clear();
+
+        var artistGroups = _allTracks
+            .Where(t => !string.IsNullOrWhiteSpace(t.Artist))
+            .GroupBy(t => t.Artist, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (
+                Artist: g.Key,
+                AlbumCount: g.Select(t => t.Album).Where(a => !string.IsNullOrWhiteSpace(a)).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                TrackCount: g.Count(),
+                SampleTrackPath: g.First().Path
+            ))
+            .OrderBy(a => a.Artist)
+            .ToList();
+
+        TrackCountText.Text = $"{artistGroups.Count:N0} artists";
+
+        foreach (var artist in artistGroups)
+        {
+            var card = new StackPanel
+            {
+                Width = 150,
+                Spacing = 4,
+                Padding = new Thickness(4),
+                Tag = artist.Artist
+            };
+
+            // Artist art container (circular)
+            var artGrid = new Grid
+            {
+                Width = 142,
+                Height = 142,
+                CornerRadius = new CornerRadius(71),
+                Background = (Brush)Application.Current.Resources["CardBackgroundFillColorSecondaryBrush"]
+            };
+
+            var artImage = new Image
+            {
+                Stretch = Stretch.UniformToFill,
+                Width = 142,
+                Height = 142,
+                Visibility = Visibility.Collapsed
+            };
+
+            // Clip to circle
+            var clip = new RectangleGeometry
+            {
+                Rect = new Windows.Foundation.Rect(0, 0, 142, 142)
+            };
+            var ellipseClip = new Microsoft.UI.Xaml.Media.EllipseGeometry
+            {
+                Center = new Windows.Foundation.Point(71, 71),
+                RadiusX = 71,
+                RadiusY = 71
+            };
+
+            var placeholder = new FontIcon
+            {
+                Glyph = "\uE77B",
+                FontSize = 36,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush")
+            };
+
+            artGrid.Children.Add(placeholder);
+            artGrid.Children.Add(artImage);
+            card.Children.Add(artGrid);
+
+            // Artist name
+            card.Children.Add(new TextBlock
+            {
+                Text = artist.Artist,
+                FontSize = 12,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxLines = 1,
+                HorizontalTextAlignment = TextAlignment.Center,
+                Margin = new Thickness(2, 2, 0, 0)
+            });
+
+            // Album + track count
+            var albumText = artist.AlbumCount == 1 ? "1 album" : $"{artist.AlbumCount} albums";
+            card.Children.Add(new TextBlock
+            {
+                Text = $"{albumText} \u00B7 {artist.TrackCount} tracks",
+                FontSize = 11,
+                Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxLines = 1,
+                HorizontalTextAlignment = TextAlignment.Center,
+                Margin = new Thickness(2, 0, 0, 0)
+            });
+
+            AlbumsGridView.Items.Add(card);
+
+            // Load artwork async (reuse album art loader)
+            var capturedImage = artImage;
+            var capturedPlaceholder = placeholder;
+            var capturedPath = artist.SampleTrackPath;
+            _ = LoadAlbumCardArtAsync(capturedImage, capturedPlaceholder, capturedPath);
+        }
+
+        if (artistGroups.Count == 0)
+        {
+            var empty = new TextBlock
+            {
+                Text = "No artists found. Add music folders in Settings.",
+                Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
+                FontSize = 13,
+                Margin = new Thickness(8)
+            };
+            AlbumsGridView.Items.Add(empty);
+        }
+    }
+
+    private void ArtistBack_Click(object sender, RoutedEventArgs e)
+    {
+        NavArtists_Click(sender, e);
     }
 
     // -- Equalizer ------------------------------------------------
@@ -3433,13 +3829,22 @@ public sealed partial class MainWindow : Window
 
     // -- Drag & drop from Explorer --------------------------------
 
-    private void RootGrid_DragOver(object sender, DragEventArgs e)
+    private async void RootGrid_DragOver(object sender, DragEventArgs e)
     {
         if (e.DataView.Contains(StandardDataFormats.StorageItems))
         {
             e.AcceptedOperation = DataPackageOperation.Copy;
-            e.DragUIOverride.Caption = "Add to Queue";
-            e.DragUIOverride.IsCaptionVisible = true;
+
+            // Check if drop contains folders
+            var deferral = e.GetDeferral();
+            try
+            {
+                var items = await e.DataView.GetStorageItemsAsync();
+                bool hasFolder = items.Any(i => i is StorageFolder);
+                e.DragUIOverride.Caption = hasFolder ? "Add to Library" : "Add to Queue";
+                e.DragUIOverride.IsCaptionVisible = true;
+            }
+            finally { deferral.Complete(); }
         }
     }
 
@@ -3449,10 +3854,15 @@ public sealed partial class MainWindow : Window
 
         var items = await e.DataView.GetStorageItemsAsync();
         var audioFiles = new List<string>();
+        var folders = new List<StorageFolder>();
 
         foreach (var item in items)
         {
-            if (item is StorageFile file)
+            if (item is StorageFolder folder)
+            {
+                folders.Add(folder);
+            }
+            else if (item is StorageFile file)
             {
                 var ext = Path.GetExtension(file.Path).ToLowerInvariant();
                 if (LibraryManager.AudioExtensions.Contains(ext))
@@ -3460,6 +3870,20 @@ public sealed partial class MainWindow : Window
             }
         }
 
+        // Handle folder drops — add to library and scan
+        if (folders.Count > 0)
+        {
+            TrackCountText.Text = "Scanning...";
+            foreach (var folder in folders)
+            {
+                var folderId = LibraryManager.AddFolder(folder.Path);
+                await LibraryManager.ScanFolderAsync(folderId, folder.Path);
+            }
+            LoadTracks();
+            return;
+        }
+
+        // Handle file drops — add to queue
         if (audioFiles.Count == 0) return;
 
         bool queueWasEmpty = _queue.Queue.Count == 0;
@@ -3685,6 +4109,17 @@ public sealed partial class MainWindow : Window
             flyout.Hide();
             Pin_Click(this, new RoutedEventArgs());
         }));
+
+        // Sleep timer
+        {
+            var sleepLabel = IsSleepTimerActive
+                ? $"Sleep ({(int)SleepTimeRemaining.TotalMinutes} min)"
+                : "Sleep Timer";
+            panel.Children.Add(ActionPanel.CreateButton("\uE823", sleepLabel, [], () =>
+            {
+                ShowSleepTimerFlyout(flyout, anchor);
+            }, isActive: IsSleepTimerActive));
+        }
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
@@ -4388,14 +4823,14 @@ public sealed partial class MainWindow : Window
             VolumeRow.Visibility = Visibility.Visible;
             NavRow.Visibility = Visibility.Visible;
             SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail
-                || _viewMode == ViewMode.AlbumDetail)
+                || _viewMode == ViewMode.AlbumDetail || _viewMode == ViewMode.ArtistDetail)
                 ? Visibility.Visible : Visibility.Collapsed;
             var isPodcast = _viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes;
             var isTrackView = _viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistList
                 || _viewMode == ViewMode.PlaylistDetail || _viewMode == ViewMode.Queue
-                || _viewMode == ViewMode.AlbumDetail;
+                || _viewMode == ViewMode.AlbumDetail || _viewMode == ViewMode.ArtistDetail;
             TrackListView.Visibility = isTrackView ? Visibility.Visible : Visibility.Collapsed;
-            AlbumsGridView.Visibility = _viewMode == ViewMode.Albums
+            AlbumsGridView.Visibility = (_viewMode == ViewMode.Albums || _viewMode == ViewMode.Artists)
                 ? Visibility.Visible : Visibility.Collapsed;
             WaveformContainer.Visibility = _viewMode == ViewMode.Visualizer
                 ? Visibility.Visible : Visibility.Collapsed;
@@ -4490,7 +4925,9 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            _currentAnimHeight += (int)(diff * 0.18);
+            var step = (int)(diff * 0.18);
+            if (step == 0) step = diff > 0 ? 1 : -1;
+            _currentAnimHeight += step;
             var newY = _targetY + (_targetHeight - _currentAnimHeight);
             AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(
                 AppWindow.Position.X, newY,
@@ -4735,5 +5172,84 @@ public sealed partial class MainWindow : Window
         if (ts.TotalHours >= 1)
             return $"{(int)ts.TotalHours}:{ts.Minutes:D2}:{ts.Seconds:D2}";
         return $"{(int)ts.TotalMinutes}:{ts.Seconds:D2}";
+    }
+
+    // -- Sleep Timer ------------------------------------------------
+
+    private void SetSleepTimer(int minutes)
+    {
+        CancelSleepTimer();
+
+        if (minutes <= 0) return;
+
+        _sleepTargetTime = DateTime.Now.AddMinutes(minutes);
+        _sleepTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _sleepTimer.Tick += SleepTimer_Tick;
+        _sleepTimer.Start();
+    }
+
+    private void CancelSleepTimer()
+    {
+        _sleepTimer?.Stop();
+        _sleepTimer = null;
+    }
+
+    private bool IsSleepTimerActive => _sleepTimer != null;
+
+    private TimeSpan SleepTimeRemaining =>
+        IsSleepTimerActive ? _sleepTargetTime - DateTime.Now : TimeSpan.Zero;
+
+    private void SleepTimer_Tick(object? sender, object e)
+    {
+        var remaining = _sleepTargetTime - DateTime.Now;
+        if (remaining <= TimeSpan.Zero)
+        {
+            CancelSleepTimer();
+            _player.Stop();
+            PlayPauseIcon.Glyph = "\uE768";
+            MiniPlayPauseIcon.Glyph = "\uE768";
+        }
+    }
+
+    private void ShowSleepTimerFlyout(Flyout parentFlyout, FrameworkElement anchor)
+    {
+        parentFlyout.Hide();
+
+        var flyout = new Flyout();
+        flyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle(minWidth: 180, maxWidth: 220);
+
+        var panel = new StackPanel { Spacing = 0 };
+        panel.Children.Add(ActionPanel.CreateSectionHeader("Sleep Timer"));
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        if (IsSleepTimerActive)
+        {
+            var rem = SleepTimeRemaining;
+            var remText = rem.TotalMinutes >= 1
+                ? $"{(int)rem.TotalMinutes} min remaining"
+                : $"{(int)rem.TotalSeconds}s remaining";
+            panel.Children.Add(ActionPanel.CreateSectionHeader(remText));
+            panel.Children.Add(ActionPanel.CreateButton("\uE711", "Cancel Timer", [], () =>
+            {
+                CancelSleepTimer();
+                flyout.Hide();
+            }, isDestructive: true));
+        }
+        else
+        {
+            foreach (var mins in new[] { 15, 30, 45, 60, 90 })
+            {
+                var m = mins;
+                var label = m >= 60 ? $"{m / 60}h{(m % 60 > 0 ? $" {m % 60}min" : "")}" : $"{m} min";
+                panel.Children.Add(ActionPanel.CreateButton("\uE823", label, [], () =>
+                {
+                    SetSleepTimer(m);
+                    flyout.Hide();
+                }));
+            }
+        }
+
+        flyout.Content = panel;
+        flyout.ShowAt(anchor);
     }
 }

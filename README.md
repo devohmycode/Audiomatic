@@ -19,6 +19,8 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 - **Playback controls**: Play/Pause, Previous, Next, timeline seeking
 - **Volume control** with mute toggle and dynamic icon states
 - **Shuffle** (Fisher-Yates) and **Repeat** modes (None / All / One)
+- **Playback speed** — adjustable from 0.25x to 4x with 9 presets, applied to both local files and streams
+- **Sleep timer** — auto-stop playback after 15, 30, 45, 60, or 90 minutes, accessible from the settings menu
 
 ### Music Library
 
@@ -58,6 +60,10 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 - **Direct playback** — play any episode directly in the built-in player
 - **Read/unread tracking** — episodes automatically marked as read when fully listened
 - **Manual toggle** — mark episodes as read or unread via Raycast-style context menu
+- **Episode downloads** — download episodes for offline listening (stored in `%LOCALAPPDATA%\Audiomatic\podcasts\`), with cancel and delete options
+- **Smart playback** — downloaded episodes play via NAudio with full equalizer and seeking support; non-downloaded episodes stream directly
+- **Playback resume** — episode progress saved automatically and restored on next play
+- **Unread badges** — subscription cards show the number of unread episodes
 - **Subscription management** — unsubscribe from podcasts via context menu
 
 ### Equalizer
@@ -91,6 +97,8 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 | **Queue** | View and manage the current playback queue |
 | **Radio** | Play online radio streams with station management |
 | **Podcasts** | Search, subscribe, browse episodes, and play podcasts |
+| **Albums** | Browse library grouped by album with artwork cards |
+| **Artists** | Browse library grouped by artist with circular artwork cards |
 | **Equalizer** | 10-band graphic EQ with presets, preamp, and per-band control |
 | **Visualizer** | Real-time FFT spectrum analyzer with mirror mode (via "..." menu) |
 | **Media Control** | Monitor and control background media players via "..." menu |
@@ -128,7 +136,7 @@ A modern, compact desktop audio player for Windows 11, built with WinUI 3 and .N
 
 - **System tray** — minimize to tray, left-click to show/hide, right-click menu
 - **System Media Transport Controls (SMTC)** — play/pause, next/previous, track info and artwork displayed in Windows media overlay
-- **Drag & Drop** — drop audio files from Explorer to play or queue them
+- **Drag & Drop** — drop audio files from Explorer to play or queue them, or drop folders to add them to the library
 - **Global hotkeys**:
   - `Ctrl+Alt+M` — Show/Hide window
   - `Ctrl+L` — Cycle display modes (Expanded → Compact → Mini → Expanded)
@@ -168,6 +176,8 @@ All application data is stored in `%LOCALAPPDATA%\Audiomatic\`:
 - `radio_stations.json` — Saved radio stations
 - `podcasts.json` — Podcast subscriptions
 - `podcast_read.json` — Read/unread episode tracking
+- `podcast_progress.json` — Episode playback progress for resume
+- `podcasts/` — Downloaded podcast episodes
 
 ## Building
 

@@ -26,6 +26,10 @@ public sealed class AudioPlayerService : IDisposable
     private bool _eqEnabled = true;
     private float _eqPreampDb;
 
+    // Speed control
+    private SpeedControlSampleProvider? _speedProvider;
+    private float _playbackSpeed = 1.0f;
+
     // NAudio-supported but not natively by MediaPlayer
     private static readonly HashSet<string> NAudioOnlyExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".ape", ".aiff" };
@@ -149,8 +153,9 @@ public sealed class AudioPlayerService : IDisposable
             _equalizer.Preamp = DbToLinear(_eqPreampDb);
 
             _audioReader.Volume = _isMuted ? 0f : (float)_volume;
+            _speedProvider = new SpeedControlSampleProvider(_equalizer) { Speed = _playbackSpeed };
             _waveOut = new WasapiOut();
-            _waveOut.Init(new NAudio.Wave.SampleProviders.SampleToWaveProvider16(_equalizer));
+            _waveOut.Init(new NAudio.Wave.SampleProviders.SampleToWaveProvider16(_speedProvider));
             _waveOut.PlaybackStopped += (_, _) =>
             {
                 if (_audioReader != null && _audioReader.CurrentTime >= _audioReader.TotalTime - TimeSpan.FromMilliseconds(500))
@@ -213,6 +218,7 @@ public sealed class AudioPlayerService : IDisposable
                 _dispatcherQueue?.TryEnqueue(() => BufferingChanged?.Invoke(false));
 
             _mediaPlayer.Volume = _volume;
+            _mediaPlayer.PlaybackSession.PlaybackRate = _playbackSpeed;
             _mediaPlayer.Play();
 
             // Wait up to 15s for the stream to open
@@ -299,6 +305,7 @@ public sealed class AudioPlayerService : IDisposable
     {
         if (_useNAudio && _audioReader != null)
         {
+            _speedProvider?.Reset();
             _audioReader.CurrentTime = position;
         }
         else
@@ -421,6 +428,21 @@ public sealed class AudioPlayerService : IDisposable
     public float EqPreampDb => _eqPreampDb;
 
     private static float DbToLinear(float db) => MathF.Pow(10f, db / 20f);
+
+    // -- Speed control --
+
+    public float PlaybackSpeed
+    {
+        get => _playbackSpeed;
+        set
+        {
+            _playbackSpeed = Math.Clamp(value, 0.25f, 4.0f);
+            if (_speedProvider != null)
+                _speedProvider.Speed = _playbackSpeed;
+            if (!_useNAudio)
+                _mediaPlayer.PlaybackSession.PlaybackRate = _playbackSpeed;
+        }
+    }
 
     public void SuspendPositionTimer()
     {
