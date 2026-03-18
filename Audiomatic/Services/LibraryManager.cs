@@ -654,6 +654,44 @@ public static class LibraryManager
         tx.Commit();
     }
 
+    // ── Single-file operations (for watcher) ────────────────
+
+    public static bool RemoveTrackByPath(string path)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        conn.Open();
+        EnablePragmas(conn);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM tracks WHERE path = @path;";
+        cmd.Parameters.AddWithValue("@path", path);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
+    public static async Task<bool> AddOrUpdateFileAsync(string filePath)
+    {
+        var ext = Path.GetExtension(filePath).ToLowerInvariant();
+        if (!AudioExtensions.Contains(ext)) return false;
+        if (!File.Exists(filePath)) return false;
+
+        var folders = GetFolders();
+        var folder = folders
+            .Where(f => f.Enabled && filePath.StartsWith(f.Path, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(f => f.Path.Length)
+            .FirstOrDefault();
+
+        if (folder == null) return false;
+
+        var track = await Task.Run(() => ReadMetadata(filePath, folder.Id));
+
+        using var conn = new SqliteConnection(ConnectionString);
+        await conn.OpenAsync();
+        EnablePragmas(conn);
+        using var transaction = conn.BeginTransaction();
+        InsertTrack(conn, track, transaction);
+        transaction.Commit();
+        return true;
+    }
+
     // ── Reset ────────────────────────────────────────────────
 
     public static void ResetLibrary()

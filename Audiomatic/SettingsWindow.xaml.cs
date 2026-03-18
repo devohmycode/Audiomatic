@@ -43,10 +43,43 @@ public sealed partial class SettingsWindow : Window
         if (backdrop != null)
             this.SystemBackdrop = backdrop;
 
+        ApplyLocalization();
         LoadSettings();
         LoadFolders();
         ApplyTheme(SettingsManager.LoadTheme());
         _suppressEvents = false;
+    }
+
+    private void ApplyLocalization()
+    {
+        TitleBarText.Text = Strings.T("Settings");
+        SelectorFolders.Text = Strings.T("Folders");
+        SelectorAppearance.Text = Strings.T("Appearance");
+
+        // Folders page
+        FoldersHeaderText.Text = Strings.T("Music Folders");
+        FoldersDescText.Text = Strings.T("Add folders containing your music files. They will be scanned for audio tracks.");
+        AddFolderText.Text = Strings.T("Add Folder");
+        ScanNowText.Text = Strings.T("Scan Now");
+
+        // Appearance page
+        ThemeHeaderText.Text = Strings.T("Theme");
+        ThemeDescText.Text = Strings.T("Choose the color theme for the application.");
+        RadioThemeSystem.Content = Strings.T("System");
+        RadioThemeLight.Content = Strings.T("Light");
+        RadioThemeDark.Content = Strings.T("Dark");
+
+        BackdropHeaderText.Text = Strings.T("Backdrop Effect");
+        BackdropDescText.Text = Strings.T("Choose the visual effect applied to the window background.");
+        RadioAcrylic.Content = Strings.T("Acrylic");
+        RadioMica.Content = Strings.T("Mica");
+        RadioMicaAlt.Content = Strings.T("Mica Alt");
+        RadioNone.Content = Strings.T("None");
+
+        VizHeaderText.Text = Strings.T("Visualizer");
+        VizDescText.Text = Strings.T("Frame rate for the audio visualizer.");
+        RadioFps30.Content = Strings.T("30 FPS");
+        RadioFps60.Content = Strings.T("60 FPS");
     }
 
     private void LoadSettings()
@@ -112,7 +145,7 @@ public sealed partial class SettingsWindow : Window
         {
             FoldersList.Children.Add(new TextBlock
             {
-                Text = "No folders added yet.",
+                Text = Strings.T("No folders added yet."),
                 Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
                 Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush")
             });
@@ -137,7 +170,7 @@ public sealed partial class SettingsWindow : Window
         LoadFolders();
 
         // Auto-scan the new folder
-        ScanStatus.Text = "Scanning...";
+        ScanStatus.Text = Strings.T("Scanning...");
         ScanProgress.Visibility = Visibility.Visible;
         ScanProgress.IsIndeterminate = true;
 
@@ -151,22 +184,22 @@ public sealed partial class SettingsWindow : Window
                 ScanProgress.IsIndeterminate = false;
                 ScanProgress.Value = (double)p.scanned / p.total * 100;
             }
-            ScanStatus.Text = $"Scanned {p.scanned}/{p.total} files...";
+            ScanStatus.Text = Strings.T("Scanned {0}/{1} files...", p.scanned, p.total);
         });
 
         try
         {
             var added = await LibraryManager.ScanFolderAsync(folderId, folder.Path, progress, _scanCts.Token);
-            ScanStatus.Text = $"Done. {added} tracks added.";
+            ScanStatus.Text = Strings.T("Done. {0} tracks added.", added);
             _onLibraryChanged?.Invoke();
         }
         catch (OperationCanceledException)
         {
-            ScanStatus.Text = "Scan cancelled.";
+            ScanStatus.Text = Strings.T("Scan cancelled.");
         }
         catch (Exception ex)
         {
-            ScanStatus.Text = $"Error: {ex.Message}";
+            ScanStatus.Text = Strings.T("Error: {0}", ex.Message);
         }
         finally
         {
@@ -186,7 +219,7 @@ public sealed partial class SettingsWindow : Window
 
     private async void Scan_Click(object sender, RoutedEventArgs e)
     {
-        ScanStatus.Text = "Scanning all folders...";
+        ScanStatus.Text = Strings.T("Scanning all folders...");
         ScanProgress.Visibility = Visibility.Visible;
         ScanProgress.IsIndeterminate = true;
         ScanButton.IsEnabled = false;
@@ -201,22 +234,22 @@ public sealed partial class SettingsWindow : Window
                 ScanProgress.IsIndeterminate = false;
                 ScanProgress.Value = (double)p.scanned / p.total * 100;
             }
-            ScanStatus.Text = $"Scanned {p.scanned}/{p.total} files...";
+            ScanStatus.Text = Strings.T("Scanned {0}/{1} files...", p.scanned, p.total);
         });
 
         try
         {
             var added = await LibraryManager.ScanAllFoldersAsync(progress, _scanCts.Token);
-            ScanStatus.Text = $"Done. {added} new tracks found.";
+            ScanStatus.Text = Strings.T("Done. {0} new tracks found.", added);
             _onLibraryChanged?.Invoke();
         }
         catch (OperationCanceledException)
         {
-            ScanStatus.Text = "Scan cancelled.";
+            ScanStatus.Text = Strings.T("Scan cancelled.");
         }
         catch (Exception ex)
         {
-            ScanStatus.Text = $"Error: {ex.Message}";
+            ScanStatus.Text = Strings.T("Error: {0}", ex.Message);
         }
         finally
         {

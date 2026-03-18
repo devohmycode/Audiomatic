@@ -24,6 +24,7 @@ public sealed partial class LibraryWindow : Window
         }
 
         ApplyTheme(SettingsManager.LoadTheme());
+        ApplyLocalization();
         UpdateHeaderTexts();
     }
 
@@ -31,6 +32,12 @@ public sealed partial class LibraryWindow : Window
     {
         _allRows = rows;
         ApplySort();
+    }
+
+    private void ApplyLocalization()
+    {
+        LibraryTitleText.Text = Strings.T("Library");
+        EmptyStateText.Text = Strings.T("No tracks in library.");
     }
 
     private void ApplyTheme(string theme)
@@ -96,8 +103,8 @@ public sealed partial class LibraryWindow : Window
 
     private void UpdateHeaderTexts()
     {
-        TitleHeaderText.Text = BuildHeader("Titre", _sortColumn == LibrarySortColumn.Title);
-        FolderHeaderText.Text = BuildHeader("Dossier", _sortColumn == LibrarySortColumn.Folder);
+        TitleHeaderText.Text = BuildHeader(Strings.T("Title"), _sortColumn == LibrarySortColumn.Title);
+        FolderHeaderText.Text = BuildHeader(Strings.T("Folder"), _sortColumn == LibrarySortColumn.Folder);
     }
 
     private string BuildHeader(string label, bool isActive)

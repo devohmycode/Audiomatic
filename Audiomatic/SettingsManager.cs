@@ -81,6 +81,15 @@ public static class SettingsManager
         Save(current with { Backdrop = backdrop });
     }
 
+    public static string LoadLanguage() => Load().Language ?? "en";
+
+    public static void SaveLanguage(string language)
+    {
+        var current = Load();
+        Save(current with { Language = language });
+        Strings.Language = language;
+    }
+
     public static string LoadTheme() => Load().Theme ?? "system";
 
     public static void SaveTheme(string theme)
@@ -125,5 +134,5 @@ public static class SettingsManager
         RepeatMode: "none",
         SortBy: "title",
         SortAscending: true,
-        Language: "fr");
+        Language: "en");
 }

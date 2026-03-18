@@ -18,7 +18,7 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
-            <TextBlock Grid.Column="0"
+            <TextBlock x:Name="LibraryTitleText" Grid.Column="0"
                        Text="Library"
                        FontSize="13"
                        VerticalAlignment="Center"
@@ -90,7 +90,7 @@
             </ListView>
 
             <TextBlock x:Name="EmptyStateText"
-                       Text="No tracks in library."
+                       Text="No tracks in library"
                        FontSize="12"
                        HorizontalAlignment="Center"
                        VerticalAlignment="Center"
