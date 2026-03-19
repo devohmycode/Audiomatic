@@ -90,6 +90,12 @@ public sealed partial class MainWindow : Window
     // Detached library window
     private LibraryWindow? _libraryWindow;
 
+    // Folder watcher
+    private LibraryWatcher? _libraryWatcher;
+
+    // Nav overflow
+    private readonly List<int> _overflowedTabIndices = [];
+
     // Collapse animation
     private enum CollapseState { Expanded, Compact, Mini }
     private CollapseState _collapseState = CollapseState.Expanded;
@@ -199,10 +205,11 @@ public sealed partial class MainWindow : Window
         // Load settings
         var settings = SettingsManager.Load();
 
-        // Apply backdrop, theme, and accent color
+        // Apply backdrop, theme, accent color, and localization
         ApplyBackdrop(SettingsManager.LoadBackdrop());
         ThemeHelper.ApplyAccentColor(settings.AccentColor);
         ApplyTheme(SettingsManager.LoadTheme());
+        ApplyLocalization();
 
         // Set up audio player
         _player.SetDispatcherQueue(DispatcherQueue);
@@ -235,6 +242,15 @@ public sealed partial class MainWindow : Window
         LibraryManager.Initialize();
         LoadTracks();
         UpdateNavigation();
+
+        // Recheck nav overflow on window resize
+        NavRow.SizeChanged += (_, _) => UpdateNavOverflow();
+
+        // Start real-time folder watchers
+        _libraryWatcher = new LibraryWatcher();
+        _libraryWatcher.LibraryChanged += () =>
+            DispatcherQueue.TryEnqueue(() => LoadTracks());
+        _libraryWatcher.Start();
 
         // Restore queue state (display info only, not playing yet)
         _queue.LoadState(_allTracks);
@@ -293,6 +309,7 @@ public sealed partial class MainWindow : Window
             _mediaTickTimer?.Stop();
             foreach (var p in _mediaSessionPanels.Values) p.Detach();
             _mediaSessionPanels.Clear();
+            _libraryWatcher?.Dispose();
             _spectrumTimer?.Stop();
             _spectrum.Dispose();
             _player.Dispose();
@@ -369,8 +386,8 @@ public sealed partial class MainWindow : Window
 
         RebuildTrackList();
         TrackCountText.Text = _viewMode == ViewMode.Library
-            ? $"{_allTracks.Count:N0} tracks"
-            : $"{_displayedTracks.Count:N0} tracks";
+            ? Strings.T("{0} tracks", _allTracks.Count.ToString("N0"))
+            : Strings.T("{0} tracks", _displayedTracks.Count.ToString("N0"));
     }
 
     private void RebuildTrackList()
@@ -558,7 +575,7 @@ public sealed partial class MainWindow : Window
             TimelineSlider.Maximum = 1;
             TimelineSlider.Value = 0;
             TimelineSlider.IsEnabled = false;
-            DurationText.Text = "LIVE";
+            DurationText.Text = Strings.T("LIVE");
             PositionText.Text = "";
             _isSeeking = false;
             return;
@@ -616,7 +633,7 @@ public sealed partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                TrackArtist.Text = $"Error: {ex.Message}";
+                TrackArtist.Text = Strings.T("Error: {0}", ex.Message);
             }
             UpdateNowPlaying(next);
         }
@@ -708,7 +725,7 @@ public sealed partial class MainWindow : Window
     {
         if (track == null)
         {
-            MiniTrackText.Text = "No track";
+            MiniTrackText.Text = Strings.T("No track");
             MiniAlbumArt.Source = null;
             MiniAlbumArt.Visibility = Visibility.Collapsed;
             MiniAlbumArtPlaceholder.Visibility = Visibility.Visible;
@@ -834,7 +851,7 @@ public sealed partial class MainWindow : Window
                 }
                 catch (Exception ex)
                 {
-                    TrackArtist.Text = $"Error: {ex.Message}";
+                    TrackArtist.Text = Strings.T("Error: {0}", ex.Message);
                 }
                 UpdateNowPlaying(track);
             }
@@ -848,7 +865,7 @@ public sealed partial class MainWindow : Window
                 }
                 catch (Exception ex)
                 {
-                    TrackArtist.Text = $"Error: {ex.Message}";
+                    TrackArtist.Text = Strings.T("Error: {0}", ex.Message);
                 }
                 UpdateNowPlaying(track);
             }
@@ -891,7 +908,7 @@ public sealed partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                TrackArtist.Text = $"Error: {ex.Message}";
+                TrackArtist.Text = Strings.T("Error: {0}", ex.Message);
             }
             UpdateNowPlaying(prev);
         }
@@ -908,7 +925,7 @@ public sealed partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                TrackArtist.Text = $"Error: {ex.Message}";
+                TrackArtist.Text = Strings.T("Error: {0}", ex.Message);
             }
             UpdateNowPlaying(next);
         }
@@ -952,13 +969,13 @@ public sealed partial class MainWindow : Window
         flyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle(minWidth: 120, maxWidth: 160);
 
         var panel = new StackPanel { Spacing = 0 };
-        panel.Children.Add(ActionPanel.CreateSectionHeader("Speed"));
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Speed")));
         panel.Children.Add(ActionPanel.CreateSeparator());
 
         foreach (var speed in SpeedPresets)
         {
             var s = speed;
-            var label = s == 1.0f ? "Normal" : $"{s:0.##}x";
+            var label = s == 1.0f ? Strings.T("Normal") : $"{s:0.##}x";
             var isActive = MathF.Abs(_player.PlaybackSpeed - s) < 0.01f;
             panel.Children.Add(ActionPanel.CreateButton(
                 isActive ? "\uE73E" : "\uE8D7", label, [], () =>
@@ -1075,7 +1092,7 @@ public sealed partial class MainWindow : Window
                         if (t != null)
                         {
                             try { await _player.PlayTrackAsync(t); }
-                            catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
+                            catch (Exception ex) { TrackArtist.Text = Strings.T("Error: {0}", ex.Message); }
                             UpdateNowPlaying(t);
                         }
                         return;
@@ -1090,7 +1107,7 @@ public sealed partial class MainWindow : Window
 
             _queue.SetQueue(_displayedTracks, idx);
             try { await _player.PlayTrackAsync(track); }
-            catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
+            catch (Exception ex) { TrackArtist.Text = Strings.T("Error: {0}", ex.Message); }
             UpdateNowPlaying(track);
         }
     }
@@ -1133,12 +1150,12 @@ public sealed partial class MainWindow : Window
     {
         var dialog = new ContentDialog
         {
-            Title = "New Playlist",
-            PrimaryButtonText = "Create",
-            CloseButtonText = "Cancel",
+            Title = Strings.T("New Playlist"),
+            PrimaryButtonText = Strings.T("Create"),
+            CloseButtonText = Strings.T("Cancel"),
             XamlRoot = Content.XamlRoot
         };
-        var input = new TextBox { PlaceholderText = "Playlist name" };
+        var input = new TextBox { PlaceholderText = Strings.T("Playlist name") };
         dialog.Content = input;
 
         if (await dialog.ShowAsync() == ContentDialogResult.Primary
@@ -1182,9 +1199,7 @@ public sealed partial class MainWindow : Window
         SetTab(NavQueueText, _viewMode == ViewMode.Queue);
         SetTab(NavRadioText, _viewMode == ViewMode.Radio);
         SetTab(NavPodcastText, _viewMode == ViewMode.Podcast || _viewMode == ViewMode.PodcastEpisodes);
-        SetTab(NavMoreText, _viewMode == ViewMode.Visualizer || _viewMode == ViewMode.Equalizer
-            || _viewMode == ViewMode.MediaControl || _viewMode == ViewMode.Albums || _viewMode == ViewMode.AlbumDetail
-            || _viewMode == ViewMode.Artists || _viewMode == ViewMode.ArtistDetail);
+        // NavMoreText highlighting is handled in UpdateNavOverflow() to account for overflowed tabs
 
         // Show/hide search & sort
         SearchSortRow.Visibility = (_viewMode == ViewMode.Library || _viewMode == ViewMode.PlaylistDetail
@@ -1217,6 +1232,93 @@ public sealed partial class MainWindow : Window
             AlbumNameText.Text = _currentAlbumName;
         if (_currentArtistName != null)
             ArtistNameText.Text = _currentArtistName;
+
+        // Recompute which tabs overflow
+        if (NavTabs.Visibility == Visibility.Visible)
+            UpdateNavOverflow();
+    }
+
+    private void UpdateNavOverflow()
+    {
+        double available = NavRow.ActualWidth - NavRow.Padding.Left - NavRow.Padding.Right;
+        if (available <= 0) return;
+
+        // Subtract right-column auto content
+        if (NewPlaylistBtn.Visibility == Visibility.Visible)
+        {
+            NewPlaylistBtn.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            available -= NewPlaylistBtn.DesiredSize.Width;
+        }
+        if (ClearQueueBtn.Visibility == Visibility.Visible)
+        {
+            ClearQueueBtn.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            available -= ClearQueueBtn.DesiredSize.Width;
+        }
+
+        var tabButtons = new[] { NavLibraryBtn, NavPlaylistsBtn, NavQueueBtn, NavRadioBtn, NavPodcastBtn };
+        var tabTexts = new[] { NavLibraryText.Text, NavPlaylistsText.Text, NavQueueText.Text, NavRadioText.Text, NavPodcastText.Text };
+
+        // Measure the "..." button
+        double moreWidth = MeasureNavButtonWidth("...") + NavTabs.Spacing;
+
+        // Measure each tab
+        var widths = new double[tabButtons.Length];
+        for (int i = 0; i < tabButtons.Length; i++)
+            widths[i] = MeasureNavButtonWidth(tabTexts[i]) + NavTabs.Spacing;
+
+        // Determine which tabs fit (always reserving space for "...")
+        _overflowedTabIndices.Clear();
+        double used = moreWidth;
+
+        for (int i = 0; i < tabButtons.Length; i++)
+        {
+            if (used + widths[i] <= available)
+            {
+                tabButtons[i].Visibility = Visibility.Visible;
+                used += widths[i];
+            }
+            else
+            {
+                tabButtons[i].Visibility = Visibility.Collapsed;
+                _overflowedTabIndices.Add(i);
+            }
+        }
+
+        // Highlight "..." if an overflowed tab or a static more-menu view is active
+        var moreViewModes = new[] { ViewMode.Visualizer, ViewMode.Equalizer, ViewMode.MediaControl,
+            ViewMode.Albums, ViewMode.AlbumDetail, ViewMode.Artists, ViewMode.ArtistDetail };
+        var overflowViewModes = new Dictionary<int, ViewMode[]>
+        {
+            [0] = [ViewMode.Library],
+            [1] = [ViewMode.PlaylistList, ViewMode.PlaylistDetail],
+            [2] = [ViewMode.Queue],
+            [3] = [ViewMode.Radio],
+            [4] = [ViewMode.Podcast, ViewMode.PodcastEpisodes],
+        };
+
+        bool moreActive = moreViewModes.Contains(_viewMode);
+        if (!moreActive)
+        {
+            foreach (var idx in _overflowedTabIndices)
+            {
+                if (overflowViewModes.TryGetValue(idx, out var modes) && modes.Contains(_viewMode))
+                { moreActive = true; break; }
+            }
+        }
+
+        NavMoreText.FontWeight = moreActive
+            ? Microsoft.UI.Text.FontWeights.SemiBold
+            : Microsoft.UI.Text.FontWeights.Normal;
+        NavMoreText.Foreground = moreActive
+            ? ThemeHelper.Brush("AccentTextFillColorPrimaryBrush")
+            : ThemeHelper.Brush("TextFillColorPrimaryBrush");
+    }
+
+    private static double MeasureNavButtonWidth(string text)
+    {
+        var tb = new TextBlock { Text = text, FontSize = 12 };
+        tb.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        return tb.DesiredSize.Width + 18; // Button Padding="8,4" → 16px horizontal + 2px chrome
     }
 
     private void AnimateViewTransition(Action buildNewContent, bool slideFromRight = true)
@@ -1388,7 +1490,9 @@ public sealed partial class MainWindow : Window
             TrackListView.Items.Add(grid);
         }
 
-        TrackCountText.Text = $"{playlists.Count} playlist{(playlists.Count != 1 ? "s" : "")}";
+        TrackCountText.Text = playlists.Count != 1
+            ? Strings.T("{0} playlists", playlists.Count)
+            : Strings.T("{0} playlist", playlists.Count);
     }
 
     private StackPanel BuildTrackContextContent(Flyout flyout, TrackInfo track)
@@ -1398,12 +1502,12 @@ public sealed partial class MainWindow : Window
         // Queue actions (not shown in Queue view itself)
         if (_viewMode != ViewMode.Queue)
         {
-            panel.Children.Add(ActionPanel.CreateButton("\uE768", "Play Next", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE768", Strings.T("Play Next"), [], () =>
             {
                 flyout.Hide();
                 _queue.AddToQueueNext(track);
             }));
-            panel.Children.Add(ActionPanel.CreateButton("\uE710", "Add to Queue", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE710", Strings.T("Add to Queue"), [], () =>
             {
                 flyout.Hide();
                 _queue.AddToQueue(track);
@@ -1412,7 +1516,7 @@ public sealed partial class MainWindow : Window
         }
 
         // Add to Playlist section
-        panel.Children.Add(ActionPanel.CreateSectionHeader("Add to Playlist"));
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Add to Playlist")));
         foreach (var pl in LibraryManager.GetPlaylists())
         {
             var plId = pl.Id;
@@ -1424,17 +1528,17 @@ public sealed partial class MainWindow : Window
                     ApplyFilterAndSort();
             }));
         }
-        panel.Children.Add(ActionPanel.CreateButton("\uE710", "New Playlist...", [], async () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE710", Strings.T("New Playlist..."), [], async () =>
         {
             flyout.Hide();
             var dialog = new ContentDialog
             {
-                Title = "New Playlist",
-                PrimaryButtonText = "Create",
-                CloseButtonText = "Cancel",
+                Title = Strings.T("New Playlist"),
+                PrimaryButtonText = Strings.T("Create"),
+                CloseButtonText = Strings.T("Cancel"),
                 XamlRoot = Content.XamlRoot
             };
-            var input = new TextBox { PlaceholderText = "Playlist name" };
+            var input = new TextBox { PlaceholderText = Strings.T("Playlist name") };
             dialog.Content = input;
             if (await dialog.ShowAsync() == ContentDialogResult.Primary
                 && !string.IsNullOrWhiteSpace(input.Text))
@@ -1446,7 +1550,7 @@ public sealed partial class MainWindow : Window
 
         // BPM detection
         panel.Children.Add(ActionPanel.CreateSeparator());
-        var bpmLabel = track.Bpm > 0 ? $"{track.Bpm} BPM" : "Detect BPM";
+        var bpmLabel = track.Bpm > 0 ? Strings.T("{0} BPM", track.Bpm) : Strings.T("Detect BPM");
         panel.Children.Add(ActionPanel.CreateButton("\uE916", bpmLabel, [], async () =>
         {
             flyout.Hide();
@@ -1454,7 +1558,7 @@ public sealed partial class MainWindow : Window
         }));
 
         // Edit tags
-        panel.Children.Add(ActionPanel.CreateButton("\uE70F", "Edit Tags", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE70F", Strings.T("Edit Tags"), [], () =>
         {
             flyout.Content = BuildMetadataEditorContent(flyout, track);
         }));
@@ -1464,7 +1568,7 @@ public sealed partial class MainWindow : Window
         {
             var currentPl = _currentPlaylist;
             panel.Children.Add(ActionPanel.CreateSeparator());
-            panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Remove from Playlist", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Remove from Playlist"), [], () =>
             {
                 flyout.Hide();
                 LibraryManager.RemoveTrackFromPlaylist(currentPl.Id, track.Id);
@@ -1479,7 +1583,7 @@ public sealed partial class MainWindow : Window
     {
         var panel = new StackPanel { Spacing = 0 };
 
-        panel.Children.Add(ActionPanel.CreateButton("\uE768", "Play", [], async () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE768", Strings.T("Play"), [], async () =>
         {
             flyout.Hide();
             var tracks = LibraryManager.GetPlaylistTracks(playlist.Id);
@@ -1487,18 +1591,18 @@ public sealed partial class MainWindow : Window
             {
                 _queue.SetQueue(tracks, 0);
                 try { await _player.PlayTrackAsync(tracks[0]); }
-                catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
+                catch (Exception ex) { TrackArtist.Text = Strings.T("Error: {0}", ex.Message); }
                 UpdateNowPlaying(tracks[0]);
             }
         }));
-        panel.Children.Add(ActionPanel.CreateButton("\uE8AC", "Rename", [], async () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE8AC", Strings.T("Rename"), [], async () =>
         {
             flyout.Hide();
             var dialog = new ContentDialog
             {
-                Title = "Rename Playlist",
-                PrimaryButtonText = "Rename",
-                CloseButtonText = "Cancel",
+                Title = Strings.T("Rename Playlist"),
+                PrimaryButtonText = Strings.T("Rename"),
+                CloseButtonText = Strings.T("Cancel"),
                 XamlRoot = Content.XamlRoot
             };
             var input = new TextBox { Text = playlist.Name };
@@ -1511,7 +1615,7 @@ public sealed partial class MainWindow : Window
             }
         }));
         panel.Children.Add(ActionPanel.CreateSeparator());
-        panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Delete", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Delete"), [], () =>
         {
             flyout.Hide();
             LibraryManager.DeletePlaylist(playlist.Id);
@@ -1525,14 +1629,14 @@ public sealed partial class MainWindow : Window
     {
         var panel = new StackPanel { Spacing = 0 };
 
-        panel.Children.Add(ActionPanel.CreateButton("\uE768", "Play", [], async () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE768", Strings.T("Play"), [], async () =>
         {
             flyout.Hide();
             var t = _queue.PlayIndex(index);
             if (t != null)
             {
                 try { await _player.PlayTrackAsync(t); }
-                catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
+                catch (Exception ex) { TrackArtist.Text = Strings.T("Error: {0}", ex.Message); }
                 UpdateNowPlaying(t);
             }
         }));
@@ -1541,7 +1645,7 @@ public sealed partial class MainWindow : Window
 
         if (index > 0)
         {
-            panel.Children.Add(ActionPanel.CreateButton("\uE74A", "Move Up", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE74A", Strings.T("Move Up"), [], () =>
             {
                 flyout.Hide();
                 _queue.MoveInQueue(index, index - 1);
@@ -1550,7 +1654,7 @@ public sealed partial class MainWindow : Window
         }
         if (index < _queue.Queue.Count - 1)
         {
-            panel.Children.Add(ActionPanel.CreateButton("\uE74B", "Move Down", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE74B", Strings.T("Move Down"), [], () =>
             {
                 flyout.Hide();
                 _queue.MoveInQueue(index, index + 1);
@@ -1560,14 +1664,14 @@ public sealed partial class MainWindow : Window
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
-        panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Remove", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Remove"), [], () =>
         {
             flyout.Hide();
             _queue.RemoveFromQueue(index);
             BuildQueueView();
         }, isDestructive: true));
 
-        panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Clear Queue", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Clear Queue"), [], () =>
         {
             flyout.Hide();
             _queue.Clear();
@@ -1626,7 +1730,7 @@ public sealed partial class MainWindow : Window
         header.Children.Add(backBtn);
         header.Children.Add(new TextBlock
         {
-            Text = "Edit Tags",
+            Text = Strings.T("Edit Tags"),
             FontSize = 13,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center
@@ -1700,7 +1804,7 @@ public sealed partial class MainWindow : Window
 
         var changeArtBtn = new Button
         {
-            Content = "Change",
+            Content = Strings.T("Change"),
             FontSize = 11,
             Padding = new Thickness(8, 3, 8, 3),
             MinHeight = 0
@@ -1736,7 +1840,7 @@ public sealed partial class MainWindow : Window
 
         var removeArtBtn = new Button
         {
-            Content = "Remove",
+            Content = Strings.T("Remove"),
             FontSize = 11,
             Padding = new Thickness(8, 3, 8, 3),
             MinHeight = 0
@@ -1759,7 +1863,7 @@ public sealed partial class MainWindow : Window
         // Text fields
         var titleBox = new TextBox
         {
-            Header = "Title",
+            Header = Strings.T("Title"),
             Text = track.Title,
             FontSize = 12,
             Padding = new Thickness(8, 5, 8, 5)
@@ -1768,7 +1872,7 @@ public sealed partial class MainWindow : Window
 
         var artistBox = new TextBox
         {
-            Header = "Artist",
+            Header = Strings.T("Artist"),
             Text = track.Artist,
             FontSize = 12,
             Padding = new Thickness(8, 5, 8, 5)
@@ -1777,7 +1881,7 @@ public sealed partial class MainWindow : Window
 
         var albumBox = new TextBox
         {
-            Header = "Album",
+            Header = Strings.T("Album"),
             Text = track.Album,
             FontSize = 12,
             Padding = new Thickness(8, 5, 8, 5)
@@ -1803,7 +1907,7 @@ public sealed partial class MainWindow : Window
 
         var saveBtn = new Button
         {
-            Content = "Save",
+            Content = Strings.T("Save"),
             FontSize = 12,
             Padding = new Thickness(16, 5, 16, 5),
             Style = (Style)Application.Current.Resources["AccentButtonStyle"]
@@ -1946,11 +2050,11 @@ public sealed partial class MainWindow : Window
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
             (uri.Scheme != "http" && uri.Scheme != "https"))
         {
-            RadioStatusText.Text = "Invalid URL. Please enter a valid http/https stream URL.";
+            RadioStatusText.Text = Strings.T("Invalid URL. Please enter a valid http/https stream URL.");
             return;
         }
 
-        RadioStatusText.Text = "Connecting...";
+        RadioStatusText.Text = Strings.T("Connecting...");
         RadioPlayBtn.IsEnabled = false;
 
         try
@@ -1960,7 +2064,7 @@ public sealed partial class MainWindow : Window
             _isRadioPlaying = true;
             await _player.PlayStreamAsync(uri);
 
-            RadioStatusText.Text = "Playing: " + url;
+            RadioStatusText.Text = Strings.T("Playing: {0}", url);
             RadioUrlBox.Text = "";
 
             // Add to stations (most recent first, no duplicates by URL)
@@ -1982,7 +2086,7 @@ public sealed partial class MainWindow : Window
             // Update now-playing display
             var displayName = _radioStations[0].Name;
             TrackTitle.Text = displayName;
-            TrackArtist.Text = "Radio";
+            TrackArtist.Text = Strings.T("Radio");
             TrackAlbum.Text = "";
             AlbumArtImage.Source = null;
             AlbumArtPlaceholder.Visibility = Visibility.Visible;
@@ -1990,10 +2094,10 @@ public sealed partial class MainWindow : Window
             // Update play/pause icons
             PlayPauseIcon.Glyph = "\uE769";
             MiniPlayPauseIcon.Glyph = "\uE769";
-            MiniTrackText.Text = "Radio — " + displayName;
+            MiniTrackText.Text = Strings.T("Radio") + " — " + displayName;
 
             // Hide duration/timeline for live stream
-            DurationText.Text = "LIVE";
+            DurationText.Text = Strings.T("LIVE");
 
             // Start loopback capture for visualizer
             _spectrum.StartLoopback();
@@ -2003,7 +2107,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            RadioStatusText.Text = "Error: " + ex.Message;
+            RadioStatusText.Text = Strings.T("Error: {0}", ex.Message);
             _isRadioPlaying = false;
         }
         finally
@@ -2068,19 +2172,19 @@ public sealed partial class MainWindow : Window
     {
         var panel = new StackPanel { Spacing = 0 };
 
-        panel.Children.Add(ActionPanel.CreateButton("\uE768", "Play", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE768", Strings.T("Play"), [], () =>
         {
             flyout.Hide();
             RadioUrlBox.Text = station.Url;
             _ = PlayRadioStreamAsync();
         }));
-        panel.Children.Add(ActionPanel.CreateButton("\uE8AC", "Rename", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE8AC", Strings.T("Rename"), [], () =>
         {
             flyout.Hide();
             ShowRadioRenameFlyout(station);
         }));
         panel.Children.Add(ActionPanel.CreateSeparator());
-        panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Delete", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Delete"), [], () =>
         {
             flyout.Hide();
             _radioStations.RemoveAll(s => s.Url == station.Url);
@@ -2097,7 +2201,7 @@ public sealed partial class MainWindow : Window
         renameFlyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle();
 
         var panel = new StackPanel { Spacing = 8 };
-        panel.Children.Add(ActionPanel.CreateSectionHeader("Rename Station"));
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Rename Station")));
 
         var input = new TextBox
         {
@@ -2122,7 +2226,7 @@ public sealed partial class MainWindow : Window
             renameFlyout.Hide();
         }
 
-        var confirmBtn = ActionPanel.CreateButton("\uE73E", "Confirm", [], DoRename);
+        var confirmBtn = ActionPanel.CreateButton("\uE73E", Strings.T("Confirm"), [], DoRename);
 
         input.KeyDown += (_, e) =>
         {
@@ -2191,7 +2295,7 @@ public sealed partial class MainWindow : Window
         PodcastListView.Items.Clear();
         PodcastListView.Items.Add(new TextBlock
         {
-            Text = "Searching...",
+            Text = Strings.T("Searching..."),
             FontSize = 13,
             Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
             Margin = new Thickness(8, 12, 8, 0)
@@ -2206,7 +2310,7 @@ public sealed partial class MainWindow : Window
             {
                 PodcastListView.Items.Add(new TextBlock
                 {
-                    Text = "No podcasts found.",
+                    Text = Strings.T("No podcasts found."),
                     FontSize = 13,
                     Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                     Margin = new Thickness(8, 12, 8, 0)
@@ -2222,7 +2326,7 @@ public sealed partial class MainWindow : Window
             PodcastListView.Items.Clear();
             PodcastListView.Items.Add(new TextBlock
             {
-                Text = "Error: " + ex.Message,
+                Text = Strings.T("Error: {0}", ex.Message),
                 FontSize = 13,
                 Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 Margin = new Thickness(8, 12, 8, 0),
@@ -2385,7 +2489,7 @@ public sealed partial class MainWindow : Window
         var panel = new StackPanel { Spacing = 0 };
         bool isSubscribed = _podcastSubscriptions.Any(p => p.FeedUrl == podcast.FeedUrl);
 
-        panel.Children.Add(ActionPanel.CreateButton("\uE8D6", "Episodes", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE8D6", Strings.T("Episodes"), [], () =>
         {
             flyout.Hide();
             _ = ShowPodcastEpisodesAsync(podcast);
@@ -2394,7 +2498,7 @@ public sealed partial class MainWindow : Window
         if (isSubscribed)
         {
             panel.Children.Add(ActionPanel.CreateSeparator());
-            panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Unsubscribe", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Unsubscribe"), [], () =>
             {
                 flyout.Hide();
                 _podcastSubscriptions.RemoveAll(p => p.FeedUrl == podcast.FeedUrl);
@@ -2405,7 +2509,7 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            panel.Children.Add(ActionPanel.CreateButton("\uE710", "Subscribe", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE710", Strings.T("Subscribe"), [], () =>
             {
                 flyout.Hide();
                 _podcastSubscriptions.Insert(0, podcast);
@@ -2443,7 +2547,7 @@ public sealed partial class MainWindow : Window
         PodcastListView.Items.Clear();
         PodcastListView.Items.Add(new TextBlock
         {
-            Text = "Loading episodes...",
+            Text = Strings.T("Loading episodes..."),
             FontSize = 13,
             Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
             Margin = new Thickness(8, 12, 8, 0)
@@ -2469,7 +2573,7 @@ public sealed partial class MainWindow : Window
             };
             var subText = new TextBlock
             {
-                Text = isSubscribed ? "Subscribed" : "Subscribe",
+                Text = isSubscribed ? Strings.T("Subscribed") : Strings.T("Subscribe"),
                 FontSize = 12,
                 Foreground = isSubscribed
                     ? ThemeHelper.Brush("TextFillColorPrimaryBrush")
@@ -2482,14 +2586,14 @@ public sealed partial class MainWindow : Window
                 if (_podcastSubscriptions.Any(p => p.FeedUrl == capturedPodcast.FeedUrl))
                 {
                     _podcastSubscriptions.RemoveAll(p => p.FeedUrl == capturedPodcast.FeedUrl);
-                    subText.Text = "Subscribe";
+                    subText.Text = Strings.T("Subscribe");
                     subBtn.Background = ThemeHelper.Brush("AccentFillColorDefaultBrush");
                     subText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.White);
                 }
                 else
                 {
                     _podcastSubscriptions.Insert(0, capturedPodcast);
-                    subText.Text = "Subscribed";
+                    subText.Text = Strings.T("Subscribed");
                     subBtn.Background = ThemeHelper.Brush("ControlFillColorDefaultBrush");
                     subText.Foreground = ThemeHelper.Brush("TextFillColorPrimaryBrush");
                 }
@@ -2501,7 +2605,7 @@ public sealed partial class MainWindow : Window
             {
                 PodcastListView.Items.Add(new TextBlock
                 {
-                    Text = "No episodes found.",
+                    Text = Strings.T("No episodes found."),
                     FontSize = 13,
                     Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                     Margin = new Thickness(8, 8, 8, 0)
@@ -2517,7 +2621,7 @@ public sealed partial class MainWindow : Window
             PodcastListView.Items.Clear();
             PodcastListView.Items.Add(new TextBlock
             {
-                Text = "Error loading episodes: " + ex.Message,
+                Text = Strings.T("Error loading episodes: {0}", ex.Message),
                 FontSize = 13,
                 Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 Margin = new Thickness(8, 12, 8, 0),
@@ -2576,7 +2680,7 @@ public sealed partial class MainWindow : Window
         else if (isDownloading)
             meta.Children.Add(new TextBlock
             {
-                Text = "Downloading...", FontSize = 11,
+                Text = Strings.T("Downloading..."), FontSize = 11,
                 Foreground = ThemeHelper.Brush("AccentTextFillColorPrimaryBrush"),
                 FontStyle = Windows.UI.Text.FontStyle.Italic
             });
@@ -2590,7 +2694,7 @@ public sealed partial class MainWindow : Window
         if (isRead)
             meta.Children.Add(new TextBlock
             {
-                Text = "Played", FontSize = 11,
+                Text = Strings.T("Played"), FontSize = 11,
                 Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 FontStyle = Windows.UI.Text.FontStyle.Italic
             });
@@ -2629,7 +2733,7 @@ public sealed partial class MainWindow : Window
         bool isDownloaded = PodcastService.IsDownloaded(episode.AudioUrl);
         bool isDownloading = _podcastDownloads.ContainsKey(episode.AudioUrl);
 
-        panel.Children.Add(ActionPanel.CreateButton("\uE768", "Play", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE768", Strings.T("Play"), [], () =>
         {
             flyout.Hide();
             _ = PlayPodcastEpisodeAsync(episode);
@@ -2640,7 +2744,7 @@ public sealed partial class MainWindow : Window
         // Download / Cancel / Delete download
         if (isDownloading)
         {
-            panel.Children.Add(ActionPanel.CreateButton("\uE711", "Cancel Download", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE711", Strings.T("Cancel Download"), [], () =>
             {
                 flyout.Hide();
                 CancelPodcastDownload(episode.AudioUrl);
@@ -2648,7 +2752,7 @@ public sealed partial class MainWindow : Window
         }
         else if (isDownloaded)
         {
-            panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Delete Download", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Delete Download"), [], () =>
             {
                 flyout.Hide();
                 PodcastService.DeleteDownload(episode.AudioUrl);
@@ -2657,7 +2761,7 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            panel.Children.Add(ActionPanel.CreateButton("\uE896", "Download", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE896", Strings.T("Download"), [], () =>
             {
                 flyout.Hide();
                 _ = DownloadPodcastEpisodeAsync(episode);
@@ -2668,7 +2772,7 @@ public sealed partial class MainWindow : Window
 
         if (isRead)
         {
-            panel.Children.Add(ActionPanel.CreateButton("\uE7BA", "Mark as unread", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE7BA", Strings.T("Mark as unread"), [], () =>
             {
                 flyout.Hide();
                 _readEpisodes.Remove(episode.AudioUrl);
@@ -2678,7 +2782,7 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            panel.Children.Add(ActionPanel.CreateButton("\uE73E", "Mark as read", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE73E", Strings.T("Mark as read"), [], () =>
             {
                 flyout.Hide();
                 _readEpisodes.Add(episode.AudioUrl);
@@ -2707,7 +2811,7 @@ public sealed partial class MainWindow : Window
         {
             // Clean up partial file on error
             PodcastService.DeleteDownload(episode.AudioUrl);
-            TrackArtist.Text = $"Download failed: {ex.Message}";
+            TrackArtist.Text = Strings.T("Download failed: {0}", ex.Message);
         }
         finally
         {
@@ -2785,7 +2889,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            TrackArtist.Text = "Error: " + ex.Message;
+            TrackArtist.Text = Strings.T("Error: {0}", ex.Message);
         }
     }
 
@@ -2797,19 +2901,45 @@ public sealed partial class MainWindow : Window
         flyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle(minWidth: 160, maxWidth: 200);
 
         var panel = new StackPanel { Spacing = 0 };
-        panel.Children.Add(ActionPanel.CreateButton("\uE93F", "Albums", [],
+
+        // Overflowed nav tabs
+        var overflowDefs = new (int idx, string icon, string label, Action click, ViewMode[] modes)[]
+        {
+            (0, "\uE8F1", "Library", () => { flyout.Hide(); NavLibrary_Click(sender, e); }, [ViewMode.Library]),
+            (1, "\uE8FD", "Playlists", () => { flyout.Hide(); NavPlaylists_Click(sender, e); }, [ViewMode.PlaylistList, ViewMode.PlaylistDetail]),
+            (2, "\uE890", "Queue", () => { flyout.Hide(); NavQueue_Click(sender, e); }, [ViewMode.Queue]),
+            (3, "\uEC05", "Radio", () => { flyout.Hide(); NavRadio_Click(sender, e); }, [ViewMode.Radio]),
+            (4, "\uE774", "Podcasts", () => { flyout.Hide(); NavPodcast_Click(sender, e); }, [ViewMode.Podcast, ViewMode.PodcastEpisodes]),
+        };
+
+        bool hasOverflow = false;
+        foreach (var def in overflowDefs)
+        {
+            if (_overflowedTabIndices.Contains(def.idx))
+            {
+                panel.Children.Add(ActionPanel.CreateButton(def.icon, Strings.T(def.label), [], def.click,
+                    isActive: def.modes.Contains(_viewMode)));
+                hasOverflow = true;
+            }
+        }
+
+        if (hasOverflow)
+            panel.Children.Add(ActionPanel.CreateSeparator());
+
+        // Static items
+        panel.Children.Add(ActionPanel.CreateButton("\uE93F", Strings.T("Albums"), [],
             () => { flyout.Hide(); NavAlbums_Click(sender, e); },
             isActive: _viewMode == ViewMode.Albums || _viewMode == ViewMode.AlbumDetail));
-        panel.Children.Add(ActionPanel.CreateButton("\uE77B", "Artists", [],
+        panel.Children.Add(ActionPanel.CreateButton("\uE77B", Strings.T("Artists"), [],
             () => { flyout.Hide(); NavArtists_Click(sender, e); },
             isActive: _viewMode == ViewMode.Artists || _viewMode == ViewMode.ArtistDetail));
-        panel.Children.Add(ActionPanel.CreateButton("\uE9D9", "Visualizer", [],
+        panel.Children.Add(ActionPanel.CreateButton("\uE9D9", Strings.T("Visualizer"), [],
             () => { flyout.Hide(); NavVisualizer_Click(sender, e); },
             isActive: _viewMode == ViewMode.Visualizer));
-        panel.Children.Add(ActionPanel.CreateButton("\uE9E9", "Equalizer", [],
+        panel.Children.Add(ActionPanel.CreateButton("\uE9E9", Strings.T("Equalizer"), [],
             () => { flyout.Hide(); NavEqualizer_Click(sender, e); },
             isActive: _viewMode == ViewMode.Equalizer));
-        panel.Children.Add(ActionPanel.CreateButton("\uE93C", "Media", [],
+        panel.Children.Add(ActionPanel.CreateButton("\uE93C", Strings.T("Media"), [],
             () => { flyout.Hide(); NavMedia_Click(sender, e); },
             isActive: _viewMode == ViewMode.MediaControl));
 
@@ -2847,7 +2977,7 @@ public sealed partial class MainWindow : Window
             .OrderBy(a => a.Album)
             .ToList();
 
-        TrackCountText.Text = $"{albumGroups.Count:N0} albums";
+        TrackCountText.Text = Strings.T("{0} albums", albumGroups.Count.ToString("N0"));
 
         foreach (var album in albumGroups)
         {
@@ -3036,7 +3166,7 @@ public sealed partial class MainWindow : Window
             .OrderBy(a => a.Artist)
             .ToList();
 
-        TrackCountText.Text = $"{artistGroups.Count:N0} artists";
+        TrackCountText.Text = Strings.T("{0} artists", artistGroups.Count.ToString("N0"));
 
         foreach (var artist in artistGroups)
         {
@@ -3300,7 +3430,7 @@ public sealed partial class MainWindow : Window
 
         var preampLabel = new TextBlock
         {
-            Text = "Preamp",
+            Text = Strings.T("Preamp"),
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0)
@@ -3338,7 +3468,7 @@ public sealed partial class MainWindow : Window
         // Reset button
         var resetBtn = new Button
         {
-            Content = "Reset",
+            Content = Strings.T("Reset"),
             HorizontalAlignment = HorizontalAlignment.Center,
             Padding = new Thickness(16, 6, 16, 6),
             Margin = new Thickness(0, 0, 0, 12)
@@ -3506,13 +3636,13 @@ public sealed partial class MainWindow : Window
                     },
                     new TextBlock
                     {
-                        Text = "No media playing",
+                        Text = Strings.T("No media playing"),
                         Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush"),
                         HorizontalAlignment = HorizontalAlignment.Center
                     },
                     new TextBlock
                     {
-                        Text = "Play music or a video to control it here",
+                        Text = Strings.T("Play music or a video to control it here"),
                         Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
                         Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                         HorizontalAlignment = HorizontalAlignment.Center
@@ -3531,7 +3661,9 @@ public sealed partial class MainWindow : Window
             }
         }
 
-        TrackCountText.Text = $"{sessions.Count} session{(sessions.Count != 1 ? "s" : "")}";
+        TrackCountText.Text = sessions.Count != 1
+            ? Strings.T("{0} sessions", sessions.Count)
+            : Strings.T("{0} session", sessions.Count);
     }
 
     private void UpdateMediaTimer()
@@ -3664,7 +3796,7 @@ public sealed partial class MainWindow : Window
                 _vizBandCount = 0;
                 _vizNoTrackText = new TextBlock
                 {
-                    Text = "No track playing", FontSize = 13,
+                    Text = Strings.T("No track playing"), FontSize = 13,
                     Foreground = ThemeHelper.Brush("TextFillColorTertiaryBrush"),
                 };
                 Canvas.SetLeft(_vizNoTrackText, w / 2 - 50);
@@ -3897,7 +4029,7 @@ public sealed partial class MainWindow : Window
             TrackListView.Items.Add(grid);
         }
 
-        TrackCountText.Text = $"{queue.Count} in queue";
+        TrackCountText.Text = Strings.T("{0} in queue", queue.Count);
     }
 
     private void TrackListView_DragItemsCompleted(ListViewBase sender, DragItemsCompletedEventArgs args)
@@ -3929,7 +4061,7 @@ public sealed partial class MainWindow : Window
             {
                 var items = await e.DataView.GetStorageItemsAsync();
                 bool hasFolder = items.Any(i => i is StorageFolder);
-                e.DragUIOverride.Caption = hasFolder ? "Add to Library" : "Add to Queue";
+                e.DragUIOverride.Caption = hasFolder ? Strings.T("Add to Library") : Strings.T("Add to Queue");
                 e.DragUIOverride.IsCaptionVisible = true;
             }
             finally { deferral.Complete(); }
@@ -3961,10 +4093,11 @@ public sealed partial class MainWindow : Window
         // Handle folder drops — add to library and scan
         if (folders.Count > 0)
         {
-            TrackCountText.Text = "Scanning...";
+            TrackCountText.Text = Strings.T("Scanning...");
             foreach (var folder in folders)
             {
                 var folderId = LibraryManager.AddFolder(folder.Path);
+                _libraryWatcher?.WatchFolder(folderId, folder.Path);
                 await LibraryManager.ScanFolderAsync(folderId, folder.Path);
             }
             LoadTracks();
@@ -3986,7 +4119,7 @@ public sealed partial class MainWindow : Window
                 // Empty queue — play directly
                 _queue.SetQueue([track], 0);
                 try { await _player.PlayTrackAsync(track); }
-                catch (Exception ex) { TrackArtist.Text = $"Error: {ex.Message}"; }
+                catch (Exception ex) { TrackArtist.Text = Strings.T("Error: {0}", ex.Message); }
                 UpdateNowPlaying(track);
                 queueWasEmpty = false;
             }
@@ -4038,9 +4171,10 @@ public sealed partial class MainWindow : Window
         if (folder == null) return;
 
         var folderId = LibraryManager.AddFolder(folder.Path);
+        _libraryWatcher?.WatchFolder(folderId, folder.Path);
 
         // Scan in background
-        TrackCountText.Text = "Scanning...";
+        TrackCountText.Text = Strings.T("Scanning...");
         await LibraryManager.ScanFolderAsync(folderId, folder.Path);
         LoadTracks();
     }
@@ -4059,24 +4193,25 @@ public sealed partial class MainWindow : Window
         var panel = new StackPanel { Spacing = 0 };
 
         // Header
-        panel.Children.Add(ActionPanel.CreateSectionHeader("Actions"));
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Actions")));
         panel.Children.Add(ActionPanel.CreateSeparator());
 
         // Library actions
-        panel.Children.Add(ActionPanel.CreateButton("\uE838", "Add Folder", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE838", Strings.T("Add Folder"), [], () =>
         {
             flyout.Hide();
             ChooseFolder_Click(this, new RoutedEventArgs());
         }));
-        panel.Children.Add(ActionPanel.CreateButton("\uE72C", "Scan Library", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE72C", Strings.T("Scan Library"), [], () =>
         {
             flyout.Hide();
             ScanAllFoldersAsync();
         }));
-        panel.Children.Add(ActionPanel.CreateButton("\uE74D", "Reset Library", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Reset Library"), [], () =>
         {
             flyout.Hide();
             LibraryManager.ResetLibrary();
+            _libraryWatcher?.Restart();
             _allTracks.Clear();
             _displayedTracks.Clear();
             RefreshLibraryWindow();
@@ -4089,7 +4224,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(ActionPanel.CreateSeparator());
 
         // Backdrop section
-        panel.Children.Add(ActionPanel.CreateSectionHeader("Backdrop"));
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Backdrop")));
 
         void AddBackdropOption(string type, string label)
         {
@@ -4104,13 +4239,13 @@ public sealed partial class MainWindow : Window
             }, isActive: isActive));
         }
 
-        AddBackdropOption("acrylic", "Acrylic");
+        AddBackdropOption("acrylic", Strings.T("Acrylic"));
 
         // Custom acrylic — replaces flyout content with sliders
         {
             var isActive = currentBackdrop == "acrylic_custom";
             panel.Children.Add(ActionPanel.CreateButton(
-                isActive ? "\uE73E" : "\uE8D7", "Custom Acrylic", [], () =>
+                isActive ? "\uE73E" : "\uE8D7", Strings.T("Custom Acrylic"), [], () =>
             {
                 var bd = SettingsManager.LoadBackdrop();
                 if (bd.Type != "acrylic_custom")
@@ -4121,15 +4256,15 @@ public sealed partial class MainWindow : Window
             }, isActive: isActive));
         }
 
-        AddBackdropOption("mica", "Mica");
-        AddBackdropOption("mica_alt", "Mica Alt");
-        AddBackdropOption("none", "None");
+        AddBackdropOption("mica", Strings.T("Mica"));
+        AddBackdropOption("mica_alt", Strings.T("Mica Alt"));
+        AddBackdropOption("none", Strings.T("None"));
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
         // Theme section
         var currentTheme = SettingsManager.LoadTheme();
-        panel.Children.Add(ActionPanel.CreateSectionHeader("Theme"));
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Theme")));
 
         void AddThemeOption(string theme, string label)
         {
@@ -4143,15 +4278,15 @@ public sealed partial class MainWindow : Window
             }, isActive: isActive));
         }
 
-        AddThemeOption("system", "System");
-        AddThemeOption("light", "Light");
-        AddThemeOption("dark", "Dark");
+        AddThemeOption("system", Strings.T("System"));
+        AddThemeOption("light", Strings.T("Light"));
+        AddThemeOption("dark", Strings.T("Dark"));
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
         // Accent color section
-        panel.Children.Add(ActionPanel.CreateSectionHeader("Accent Color"));
-        panel.Children.Add(ActionPanel.CreateButton("\uE790", "Choose Accent...", [], () =>
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Accent Color")));
+        panel.Children.Add(ActionPanel.CreateButton("\uE790", Strings.T("Choose Accent..."), [], () =>
         {
             flyout.Hide();
             ShowAccentColorFlyout(anchor);
@@ -4160,7 +4295,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(ActionPanel.CreateSeparator());
 
         // Visualizer FPS
-        panel.Children.Add(ActionPanel.CreateSectionHeader("Visualizer"));
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Visualizer")));
 
         void AddFpsOption(int fps, string label)
         {
@@ -4175,15 +4310,15 @@ public sealed partial class MainWindow : Window
             }, isActive: isActive));
         }
 
-        AddFpsOption(30, "30 FPS");
-        AddFpsOption(60, "60 FPS");
+        AddFpsOption(30, Strings.T("30 FPS"));
+        AddFpsOption(60, Strings.T("60 FPS"));
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
         // Toggle actions
         panel.Children.Add(ActionPanel.CreateButton("\uE73F",
-            _collapseState == CollapseState.Expanded ? "Compact Mode" :
-            _collapseState == CollapseState.Compact ? "Mini Player" : "Expand",
+            _collapseState == CollapseState.Expanded ? Strings.T("Compact Mode") :
+            _collapseState == CollapseState.Compact ? Strings.T("Mini Player") : Strings.T("Expand"),
             ["Ctrl", "L"], () =>
         {
             flyout.Hide();
@@ -4192,7 +4327,7 @@ public sealed partial class MainWindow : Window
 
         panel.Children.Add(ActionPanel.CreateButton(
             _isPinnedOnTop ? "\uE842" : "\uE840",
-            _isPinnedOnTop ? "Unpin from Top" : "Pin on Top",
+            _isPinnedOnTop ? Strings.T("Unpin from Top") : Strings.T("Pin on Top"),
             [], () =>
         {
             flyout.Hide();
@@ -4202,8 +4337,8 @@ public sealed partial class MainWindow : Window
         // Sleep timer
         {
             var sleepLabel = IsSleepTimerActive
-                ? $"Sleep ({(int)SleepTimeRemaining.TotalMinutes} min)"
-                : "Sleep Timer";
+                ? Strings.T("Sleep ({0} min)", (int)SleepTimeRemaining.TotalMinutes)
+                : Strings.T("Sleep Timer");
             panel.Children.Add(ActionPanel.CreateButton("\uE823", sleepLabel, [], () =>
             {
                 ShowSleepTimerFlyout(flyout, anchor);
@@ -4212,8 +4347,29 @@ public sealed partial class MainWindow : Window
 
         panel.Children.Add(ActionPanel.CreateSeparator());
 
+        // Language section
+        var currentLang = SettingsManager.LoadLanguage();
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Language")));
+
+        void AddLanguageOption(string code, string label)
+        {
+            var isActive = currentLang == code;
+            panel.Children.Add(ActionPanel.CreateButton(
+                isActive ? "\uE73E" : "\uE8D7", label, [], () =>
+            {
+                SettingsManager.SaveLanguage(code);
+                flyout.Hide();
+                ApplyLocalization();
+            }, isActive: isActive));
+        }
+
+        AddLanguageOption("en", Strings.T("English"));
+        AddLanguageOption("fr", Strings.T("French"));
+
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
         // Quit
-        panel.Children.Add(ActionPanel.CreateButton("\uE711", "Quit", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE711", Strings.T("Quit"), [], () =>
         {
             flyout.Hide();
             _isQuitting = true;
@@ -4273,7 +4429,7 @@ public sealed partial class MainWindow : Window
                 t.Title,
                 folderPathById.TryGetValue(t.FolderId, out var path)
                     ? path
-                    : $"Unknown folder ({t.FolderId})"))
+                    : Strings.T("Unknown folder ({0})", t.FolderId)))
             .ToList();
     }
 
@@ -4329,16 +4485,16 @@ public sealed partial class MainWindow : Window
 
     private async void ScanAllFoldersAsync()
     {
-        TrackCountText.Text = "Scanning...";
+        TrackCountText.Text = Strings.T("Scanning...");
         try
         {
             var added = await LibraryManager.ScanAllFoldersAsync();
             LoadTracks();
-            TrackCountText.Text = $"{_allTracks.Count:N0} tracks";
+            TrackCountText.Text = Strings.T("{0} tracks", _allTracks.Count.ToString("N0"));
         }
         catch (Exception ex)
         {
-            TrackCountText.Text = $"Error: {ex.Message}";
+            TrackCountText.Text = Strings.T("Error: {0}", ex.Message);
         }
     }
 
@@ -4394,7 +4550,7 @@ public sealed partial class MainWindow : Window
         var panel = new StackPanel { Spacing = 0, Width = 260 };
 
         // Back button
-        panel.Children.Add(ActionPanel.CreateButton("\uE72B", "Backdrop", [], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE72B", Strings.T("Backdrop"), [], () =>
         {
             flyout.Hide();
             ShowSettingsFlyout(anchor);
@@ -4419,7 +4575,7 @@ public sealed partial class MainWindow : Window
         var tintOpacityHeader = new Grid { Margin = new Thickness(8, 8, 8, 0) };
         tintOpacityHeader.Children.Add(new TextBlock
         {
-            Text = "Opacité de teinte", FontSize = 12,
+            Text = Strings.T("Tint Opacity"), FontSize = 12,
             Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
         });
         tintOpacityHeader.Children.Add(tintOpacityValue);
@@ -4448,7 +4604,7 @@ public sealed partial class MainWindow : Window
         var luminosityHeader = new Grid { Margin = new Thickness(8, 8, 8, 0) };
         luminosityHeader.Children.Add(new TextBlock
         {
-            Text = "Luminosité", FontSize = 12,
+            Text = Strings.T("Luminosity"), FontSize = 12,
             Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
         });
         luminosityHeader.Children.Add(luminosityValue);
@@ -4468,7 +4624,7 @@ public sealed partial class MainWindow : Window
             BorderBrush = ThemeHelper.Brush("ControlStrokeColorDefaultBrush"),
             Background = new SolidColorBrush(ParseColor(settings.TintColor))
         };
-        ToolTipService.SetToolTip(tintColorPreview, "Choose color");
+        ToolTipService.SetToolTip(tintColorPreview, Strings.T("Choose color"));
         var tintColorBox = new TextBox
         {
             Text = settings.TintColor, FontSize = 12, MaxLength = 7,
@@ -4507,7 +4663,7 @@ public sealed partial class MainWindow : Window
 
         var tintColorLabel = new TextBlock
         {
-            Text = "Teinte", FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
+            Text = Strings.T("Tint"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
             Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
         };
         Grid.SetColumn(tintColorLabel, 0);
@@ -4527,7 +4683,7 @@ public sealed partial class MainWindow : Window
             BorderBrush = ThemeHelper.Brush("ControlStrokeColorDefaultBrush"),
             Background = new SolidColorBrush(ParseColor(settings.FallbackColor))
         };
-        ToolTipService.SetToolTip(fallbackColorPreview, "Choose color");
+        ToolTipService.SetToolTip(fallbackColorPreview, Strings.T("Choose color"));
         var fallbackColorBox = new TextBox
         {
             Text = settings.FallbackColor, FontSize = 12, MaxLength = 7,
@@ -4566,7 +4722,7 @@ public sealed partial class MainWindow : Window
 
         var fallbackColorLabel = new TextBlock
         {
-            Text = "Repli", FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
+            Text = Strings.T("Fallback"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
             Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
         };
         Grid.SetColumn(fallbackColorLabel, 0);
@@ -4606,7 +4762,7 @@ public sealed partial class MainWindow : Window
 
         var kindLabel = new TextBlock
         {
-            Text = "Style", FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
+            Text = Strings.T("Style"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
             Foreground = ThemeHelper.Brush("TextFillColorSecondaryBrush")
         };
         Grid.SetColumn(kindLabel, 0);
@@ -4907,6 +5063,68 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>Re-apply all localized text to XAML-defined elements.</summary>
+    private void ApplyLocalization()
+    {
+        // Navigation tabs
+        NavLibraryText.Text = Strings.T("Library");
+        NavPlaylistsText.Text = Strings.T("Playlists");
+        NavQueueText.Text = Strings.T("Queue");
+        NavRadioText.Text = Strings.T("Radio");
+        NavPodcastText.Text = Strings.T("Podcasts");
+
+        // Sort menu
+        SortTitle.Text = Strings.T("Title");
+        SortArtist.Text = Strings.T("Artist");
+        SortAlbum.Text = Strings.T("Album");
+        SortDuration.Text = Strings.T("Duration");
+        SortBpm.Text = Strings.T("BPM");
+        SortAscending.Text = Strings.T("Ascending");
+
+        // Search box
+        SearchBox.PlaceholderText = Strings.T("Search");
+
+        // Tooltips
+        ToolTipService.SetToolTip(CollapseButton, Strings.T("Compact (Ctrl+L)"));
+        ToolTipService.SetToolTip(PinButton, Strings.T("Pin on top"));
+        ToolTipService.SetToolTip(ShuffleButton, Strings.T("Shuffle"));
+        ToolTipService.SetToolTip(PrevButton, Strings.T("Previous"));
+        ToolTipService.SetToolTip(NextButton, Strings.T("Next"));
+        ToolTipService.SetToolTip(RepeatButton, Strings.T("Repeat"));
+        ToolTipService.SetToolTip(SpeedButton, Strings.T("Playback Speed"));
+        ToolTipService.SetToolTip(RadioPlayBtn, Strings.T("Play stream"));
+        ToolTipService.SetToolTip(PlaylistBackBtn, Strings.T("Back to playlists"));
+        ToolTipService.SetToolTip(AlbumBackBtn, Strings.T("Back to albums"));
+        ToolTipService.SetToolTip(ArtistBackBtn, Strings.T("Back to artists"));
+        ToolTipService.SetToolTip(NewPlaylistBtn, Strings.T("New Playlist"));
+        ToolTipService.SetToolTip(ClearQueueBtn, Strings.T("Clear Queue"));
+        ToolTipService.SetToolTip(SettingsBtn, Strings.T("Settings"));
+
+        // Radio
+        RadioStreamHeader.Text = Strings.T("Radio Stream");
+        RadioUrlBox.PlaceholderText = Strings.T("Enter stream URL (e.g. http://...)");
+        RecentStationsHeader.Text = Strings.T("Recent stations");
+
+        // Podcast
+        if (_viewMode != ViewMode.PodcastEpisodes)
+            PodcastSearchBox.PlaceholderText = Strings.T("Search podcasts...");
+
+        // Bottom bar
+        ChooseFolderText.Text = Strings.T("Choose Folder");
+        TrackCountText.Text = Strings.T("0 tracks");
+
+        // Now playing defaults (only if no track is active)
+        if (_player.CurrentTrack == null && !_isRadioPlaying)
+        {
+            TrackTitle.Text = Strings.T("No track");
+            MiniTrackText.Text = Strings.T("No track");
+        }
+
+        // Rebuild current view to pick up new strings
+        UpdateNavigation();
+        ApplyFilterAndSort();
+    }
+
     // -- Collapse animation ----------------------------------------
 
     private void ToggleCollapse()
@@ -5148,7 +5366,7 @@ public sealed partial class MainWindow : Window
         flyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle(minWidth: 140, maxWidth: 180);
 
         var panel = new StackPanel { Spacing = 0 };
-        panel.Children.Add(ActionPanel.CreateButton("\uE740", "Expand", ["Ctrl", "L"], () =>
+        panel.Children.Add(ActionPanel.CreateButton("\uE740", Strings.T("Expand"), ["Ctrl", "L"], () =>
         {
             flyout.Hide();
             ToggleCollapse();
@@ -5290,9 +5508,9 @@ public sealed partial class MainWindow : Window
     private void ShowTrayContextMenu()
     {
         var hMenu = CreatePopupMenu();
-        AppendMenu(hMenu, 0, IDM_SHOW, "Show\tCtrl+Alt+M");
+        AppendMenu(hMenu, 0, IDM_SHOW, Strings.T("Show\tCtrl+Alt+M"));
         AppendMenu(hMenu, MF_SEPARATOR, 0, null);
-        AppendMenu(hMenu, 0, IDM_QUIT, "Quit");
+        AppendMenu(hMenu, 0, IDM_QUIT, Strings.T("Quit"));
 
         GetCursorPos(out var pt);
         SetForegroundWindow(_hwnd);
@@ -5378,17 +5596,17 @@ public sealed partial class MainWindow : Window
         flyout.FlyoutPresenterStyle = ActionPanel.CreateFlyoutPresenterStyle(minWidth: 180, maxWidth: 220);
 
         var panel = new StackPanel { Spacing = 0 };
-        panel.Children.Add(ActionPanel.CreateSectionHeader("Sleep Timer"));
+        panel.Children.Add(ActionPanel.CreateSectionHeader(Strings.T("Sleep Timer")));
         panel.Children.Add(ActionPanel.CreateSeparator());
 
         if (IsSleepTimerActive)
         {
             var rem = SleepTimeRemaining;
             var remText = rem.TotalMinutes >= 1
-                ? $"{(int)rem.TotalMinutes} min remaining"
-                : $"{(int)rem.TotalSeconds}s remaining";
+                ? Strings.T("{0} min remaining", (int)rem.TotalMinutes)
+                : Strings.T("{0}s remaining", (int)rem.TotalSeconds);
             panel.Children.Add(ActionPanel.CreateSectionHeader(remText));
-            panel.Children.Add(ActionPanel.CreateButton("\uE711", "Cancel Timer", [], () =>
+            panel.Children.Add(ActionPanel.CreateButton("\uE711", Strings.T("Cancel Timer"), [], () =>
             {
                 CancelSleepTimer();
                 flyout.Hide();
@@ -5399,7 +5617,9 @@ public sealed partial class MainWindow : Window
             foreach (var mins in new[] { 15, 30, 45, 60, 90 })
             {
                 var m = mins;
-                var label = m >= 60 ? $"{m / 60}h{(m % 60 > 0 ? $" {m % 60}min" : "")}" : $"{m} min";
+                var label = m >= 60
+                    ? (m % 60 > 0 ? Strings.T("{0}h {1}min", m / 60, m % 60) : Strings.T("{0}h", m / 60))
+                    : Strings.T("{0} min", m);
                 panel.Children.Add(ActionPanel.CreateButton("\uE823", label, [], () =>
                 {
                     SetSleepTimer(m);

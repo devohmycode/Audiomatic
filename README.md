@@ -187,6 +187,32 @@ All application data is stored in `%LOCALAPPDATA%\Audiomatic\`:
 dotnet build Audiomatic.sln -c Release
 ```
 
+## Development
+
+### Adding a New Language
+
+The app uses a lightweight dictionary-based i18n system (`Audiomatic/Strings.cs`). English and French are included out of the box. To add a new language:
+
+1. **Add translations** in `Strings.cs` — append your language code to each entry in the `Translations` dictionary:
+
+   ```csharp
+   ["Library"] = new() { ["en"] = "Library", ["fr"] = "Bibliothèque", ["de"] = "Bibliothek" },
+   ```
+
+2. **Add the language option** in `MainWindow.xaml.cs` — find the `// Language section` block inside `ShowSettingsFlyout()` and add a line:
+
+   ```csharp
+   AddLanguageOption("de", Strings.T("German"));
+   ```
+
+3. **Add the language name translations** in `Strings.cs` so it displays correctly in every language:
+
+   ```csharp
+   ["German"] = new() { ["en"] = "German", ["fr"] = "Allemand", ["de"] = "Deutsch" },
+   ```
+
+The fallback chain is: requested language → English → raw key. Missing translations for a given key will gracefully fall back to English.
+
 ![Audiomatic3](https://res.cloudinary.com/dptrimoqv/image/upload/v1773226483/475shots_so_evix22.png)
 
 ## License

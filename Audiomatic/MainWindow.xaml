@@ -269,7 +269,7 @@
             <!-- Playlist detail header (back + name) -->
             <StackPanel x:Name="PlaylistHeader" Grid.Column="0" Orientation="Horizontal"
                         Spacing="4" Visibility="Collapsed">
-                <Button Background="Transparent" BorderThickness="0" Padding="4,4"
+                <Button x:Name="PlaylistBackBtn" Background="Transparent" BorderThickness="0" Padding="4,4"
                         Click="NavBack_Click" ToolTipService.ToolTip="Back to playlists">
                     <FontIcon Glyph="&#xE72B;" FontSize="12"/>
                 </Button>
@@ -281,7 +281,7 @@
             <!-- Album detail header (back + album name) -->
             <StackPanel x:Name="AlbumHeader" Grid.Column="0" Orientation="Horizontal"
                         Spacing="4" Visibility="Collapsed">
-                <Button Background="Transparent" BorderThickness="0" Padding="4,4"
+                <Button x:Name="AlbumBackBtn" Background="Transparent" BorderThickness="0" Padding="4,4"
                         Click="AlbumBack_Click" ToolTipService.ToolTip="Back to albums">
                     <FontIcon Glyph="&#xE72B;" FontSize="12"/>
                 </Button>
@@ -293,7 +293,7 @@
             <!-- Artist detail header (back + artist name) -->
             <StackPanel x:Name="ArtistHeader" Grid.Column="0" Orientation="Horizontal"
                         Spacing="4" Visibility="Collapsed">
-                <Button Background="Transparent" BorderThickness="0" Padding="4,4"
+                <Button x:Name="ArtistBackBtn" Background="Transparent" BorderThickness="0" Padding="4,4"
                         Click="ArtistBack_Click" ToolTipService.ToolTip="Back to artists">
                     <FontIcon Glyph="&#xE72B;" FontSize="12"/>
                 </Button>
@@ -389,7 +389,7 @@
         <ScrollViewer x:Name="RadioContainer" Grid.Row="7" Visibility="Collapsed"
                       Padding="14,0">
             <StackPanel Spacing="12">
-                <TextBlock Text="Radio Stream" FontSize="14" FontWeight="SemiBold"
+                <TextBlock x:Name="RadioStreamHeader" Text="Radio Stream" FontSize="14" FontWeight="SemiBold"
                            Margin="0,8,0,0"/>
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -415,7 +415,7 @@
                           IsItemClickEnabled="True"
                           ItemClick="RadioHistory_ItemClick">
                     <ListView.Header>
-                        <TextBlock Text="Recent stations" FontSize="12"
+                        <TextBlock x:Name="RecentStationsHeader" Text="Recent stations" FontSize="12"
                                    Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                    Margin="0,4,0,4"/>
                     </ListView.Header>
@@ -517,7 +517,7 @@
                     Padding="6,3" Click="ChooseFolder_Click">
                 <StackPanel Orientation="Horizontal" Spacing="6">
                     <FontIcon Glyph="&#xE838;" FontSize="12"/>
-                    <TextBlock Text="Choose Folder"
+                    <TextBlock x:Name="ChooseFolderText" Text="Choose Folder"
                                Style="{StaticResource CaptionTextBlockStyle}"
                                FontSize="11"/>
                 </StackPanel>
@@ -531,7 +531,7 @@
                        FontSize="11"
                        Margin="0,0,6,0"/>
 
-            <Button Grid.Column="3" Background="Transparent" BorderThickness="0"
+            <Button x:Name="SettingsBtn" Grid.Column="3" Background="Transparent" BorderThickness="0"
                     Padding="6,3" Click="Settings_Click"
                     ToolTipService.ToolTip="Settings">
                 <FontIcon Glyph="&#xE713;" FontSize="13"/>

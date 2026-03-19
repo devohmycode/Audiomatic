@@ -15,6 +15,7 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         SetCurrentProcessExplicitAppUserModelID("Audiomatic.App");
+        Strings.Language = SettingsManager.LoadLanguage();
         _window = new MainWindow();
         _window.Activate();
     }
