@@ -4365,8 +4365,9 @@ public sealed partial class MainWindow : Window
 
         AddLanguageOption("en", Strings.T("English"));
         AddLanguageOption("fr", Strings.T("French"));
+		AddLanguageOption("pl", Strings.T("Polish"));
 
-        panel.Children.Add(ActionPanel.CreateSeparator());
+		panel.Children.Add(ActionPanel.CreateSeparator());
 
         // Quit
         panel.Children.Add(ActionPanel.CreateButton("\uE711", Strings.T("Quit"), [], () =>
