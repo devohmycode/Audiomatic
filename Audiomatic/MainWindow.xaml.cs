@@ -127,7 +127,6 @@ public sealed partial class MainWindow : Window
     private CollapseState _collapseState = CollapseState.Expanded;
     private readonly int _expandedHeight = 710;
     private readonly int _collapsedHeight = 220;
-    private readonly int _miniHeight = 60;
     private DispatcherTimer? _animTimer;
     private int _targetHeight;
     private int _currentAnimHeight;
@@ -4716,8 +4715,7 @@ public sealed partial class MainWindow : Window
 
         // ── Window ───────────────────────────────────────────────
         panel.Children.Add(ActionPanel.CreateButton("\uE73F",
-            _collapseState == CollapseState.Expanded ? Strings.T("Compact Mode") :
-            _collapseState == CollapseState.Compact ? Strings.T("Mini Player") : Strings.T("Expand"),
+            _collapseState == CollapseState.Expanded ? Strings.T("Compact Mode") : Strings.T("Expand"),
             ["Ctrl", "L"], () =>
         {
             flyout.Hide();
@@ -4761,6 +4759,16 @@ public sealed partial class MainWindow : Window
             });
             allButtons.Add(sleepBtn);
             panel.Children.Add(sleepBtn);
+        }
+
+        // About — navigate to sub-panel
+        {
+            var aboutBtn = ActionPanel.CreateNavigateButton(Strings.T("About"), () =>
+            {
+                ShowAboutPanel(flyout, anchor);
+            });
+            allButtons.Add(aboutBtn);
+            panel.Children.Add(aboutBtn);
         }
 
         panel.Children.Add(ActionPanel.CreateSeparator());
@@ -5757,21 +5765,14 @@ public sealed partial class MainWindow : Window
 
     private void ToggleCollapse()
     {
-        // Cycle: Expanded → Compact → Mini → Expanded
-        _collapseState = _collapseState switch
-        {
-            CollapseState.Expanded => CollapseState.Compact,
-            CollapseState.Compact => CollapseState.Mini,
-            CollapseState.Mini => CollapseState.Expanded,
-            _ => CollapseState.Expanded
-        };
+        // Cycle: Expanded ↔ Compact (Mini removed — use overlay widget instead)
+        _collapseState = _collapseState == CollapseState.Expanded
+            ? CollapseState.Compact
+            : CollapseState.Expanded;
 
-        _targetHeight = _collapseState switch
-        {
-            CollapseState.Mini => _miniHeight,
-            CollapseState.Compact => _collapsedHeight,
-            _ => _expandedHeight
-        };
+        _targetHeight = _collapseState == CollapseState.Compact
+            ? _collapsedHeight
+            : _expandedHeight;
 
         _currentAnimHeight = AppWindow.Size.Height;
 
@@ -5781,20 +5782,9 @@ public sealed partial class MainWindow : Window
         _targetY = bottomEdge - _targetHeight;
 
         // Update icon and tooltip
-        CollapseIcon.Glyph = _collapseState switch
-        {
-            CollapseState.Expanded => "\uE73F",
-            CollapseState.Compact => "\uE73F",
-            CollapseState.Mini => "\uE740",
-            _ => "\uE73F"
-        };
-        ToolTipService.SetToolTip(CollapseButton, _collapseState switch
-        {
-            CollapseState.Expanded => "Compact (Ctrl+L)",
-            CollapseState.Compact => "Mini (Ctrl+L)",
-            CollapseState.Mini => "Expand (Ctrl+L)",
-            _ => "Compact (Ctrl+L)"
-        });
+        CollapseIcon.Glyph = "\uE73F";
+        ToolTipService.SetToolTip(CollapseButton,
+            _collapseState == CollapseState.Expanded ? "Compact (Ctrl+L)" : "Expand (Ctrl+L)");
 
         // Show elements before expanding animation
         if (_collapseState == CollapseState.Expanded)
@@ -5977,14 +5967,7 @@ public sealed partial class MainWindow : Window
 
     private void RootGrid_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        if (_collapseState == CollapseState.Mini)
-        {
-            ShowMiniContextMenu(sender as FrameworkElement ?? RootGrid);
-        }
-        else
-        {
-            ShowSettingsFlyout(sender as FrameworkElement ?? RootGrid);
-        }
+        ShowSettingsFlyout(sender as FrameworkElement ?? RootGrid);
         e.Handled = true;
     }
 
@@ -6214,6 +6197,82 @@ public sealed partial class MainWindow : Window
             PlayPauseIcon.Glyph = "\uE768";
             MiniPlayPauseIcon.Glyph = "\uE768";
         }
+    }
+
+    private void ShowAboutPanel(Flyout flyout, FrameworkElement anchor)
+    {
+        var panel = ActionPanel.CreateSubPanelWithHeader(Strings.T("About"), () =>
+        {
+            flyout.Hide();
+            ShowSettingsFlyout(anchor);
+        });
+
+        // ── App identity block ────────────────────────────────────
+        var identity = new StackPanel
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 10, 0, 10),
+            Spacing = 2
+        };
+
+        identity.Children.Add(new TextBlock
+        {
+            Text = "Audiomatic",
+            FontSize = 18,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            HorizontalAlignment = HorizontalAlignment.Center
+        });
+
+        identity.Children.Add(new TextBlock
+        {
+            Text = $"{Strings.T("Developer")} : OhMyCode",
+            FontSize = 12,
+            Opacity = 0.6,
+            HorizontalAlignment = HorizontalAlignment.Center
+        });
+
+        identity.Children.Add(new TextBlock
+        {
+            Text = "Version 0.2.0",
+            FontSize = 12,
+            Opacity = 0.45,
+            HorizontalAlignment = HorizontalAlignment.Center
+        });
+
+        panel.Children.Add(identity);
+        panel.Children.Add(ActionPanel.CreateSeparator());
+
+        // ── Links ─────────────────────────────────────────────────
+        const string GitHubPath =
+            "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38" +
+            " 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13" +
+            "-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66" +
+            ".07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15" +
+            "-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0" +
+            " 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56" +
+            ".82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07" +
+            "-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z";
+
+        // Buy Me a Coffee: stylised filled mug silhouette (16×16 viewport)
+        const string BmcPath =
+            "M2 3h11v7c0 1.66-1.34 3-3 3H5c-1.66 0-3-1.34-3-3V3z" +
+            " M13 5h1c.55 0 1 .45 1 1v2c0 .55-.45 1-1 1h-1" +
+            " M4.5 0v1.5 M7.5 0v1.5 M10.5 0v1.5" +
+            " M1 13h13";
+
+        panel.Children.Add(ActionPanel.CreateLinkRow(
+            ActionPanel.CreateSvgIcon(GitHubPath, 14),
+            Strings.T("GitHub"),
+            () => _ = Windows.System.Launcher.LaunchUriAsync(
+                new Uri("https://github.com/devohmycode"))));
+
+        panel.Children.Add(ActionPanel.CreateLinkRow(
+            ActionPanel.CreateSvgIcon(BmcPath, 14, isFilled: false),
+            Strings.T("Buy Me a Coffee"),
+            () => _ = Windows.System.Launcher.LaunchUriAsync(
+                new Uri("https://buymeacoffee.com/ohmycodeapp"))));
+
+        flyout.Content = panel;
     }
 
     private void ShowSleepTimerPanel(Flyout flyout, FrameworkElement anchor)

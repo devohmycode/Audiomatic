@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 
 namespace Audiomatic;
@@ -117,6 +118,79 @@ public static class ActionPanel
         btn.Content = grid;
         btn.Click += (_, _) => handler();
 
+        return btn;
+    }
+
+    // ── SVG / link row helpers ───────────────────────────────────
+
+    /// <summary>
+    /// Renders an SVG path data string into a Viewbox of the given size,
+    /// coloured with the primary text foreground.
+    /// </summary>
+    public static FrameworkElement CreateSvgIcon(string pathData, double size, bool isFilled = true)
+    {
+        var path = new Microsoft.UI.Xaml.Shapes.Path
+        {
+            Data = (Geometry)XamlBindingHelper.ConvertValue(typeof(Geometry), pathData),
+            Stretch = Stretch.Uniform
+        };
+        if (isFilled)
+        {
+            path.Fill = ThemeHelper.Brush("TextFillColorPrimaryBrush");
+        }
+        else
+        {
+            path.Stroke = ThemeHelper.Brush("TextFillColorPrimaryBrush");
+            path.StrokeThickness = 1.5;
+            path.StrokeLineJoin = Microsoft.UI.Xaml.Media.PenLineJoin.Round;
+            path.StrokeStartLineCap = Microsoft.UI.Xaml.Media.PenLineCap.Round;
+            path.StrokeEndLineCap = Microsoft.UI.Xaml.Media.PenLineCap.Round;
+        }
+        return new Viewbox { Width = size, Height = size, Child = path, VerticalAlignment = VerticalAlignment.Center };
+    }
+
+    /// <summary>
+    /// A button row with a custom icon element on the left, a label, and an
+    /// external-link arrow on the right — for clickable hyperlink-style rows.
+    /// </summary>
+    public static Button CreateLinkRow(FrameworkElement icon, string label, Action handler)
+    {
+        var btn = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 5, 8, 5),
+            CornerRadius = new CornerRadius(4),
+            MinHeight = 0,
+            Tag = label
+        };
+
+        var grid = new Grid { ColumnSpacing = 8 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        Grid.SetColumn(icon, 0);
+        grid.Children.Add(icon);
+
+        var text = new TextBlock { Text = label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+
+        var externalIcon = new FontIcon
+        {
+            Glyph = "\uE8A7",   // Link / open-in-new
+            FontSize = 10,
+            Opacity = 0.4,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(externalIcon, 2);
+        grid.Children.Add(externalIcon);
+
+        btn.Content = grid;
+        btn.Click += (_, _) => handler();
         return btn;
     }
 
