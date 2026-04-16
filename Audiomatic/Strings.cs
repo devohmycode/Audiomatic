@@ -241,6 +241,11 @@ public static class Strings
         ["Scanning all folders..."] = new() { ["en"] = "Scanning all folders...", ["fr"] = "Analyse de tous les dossiers...", ["pl"] = "Skanowanie wszystkich folderów..." },
         ["Unknown folder ({0})"] = new() { ["en"] = "Unknown folder ({0})", ["fr"] = "Dossier inconnu ({0})", ["pl"] = "Nieznany folder ({0})" },
 
+        // ── Overlay widget ─────────────────────────────────────
+        ["Overlay Widget"] = new() { ["en"] = "Overlay Widget", ["fr"] = "Widget flottant" },
+        ["Show Overlay"] = new() { ["en"] = "Show Overlay", ["fr"] = "Afficher le widget" },
+        ["Hide Overlay"] = new() { ["en"] = "Hide Overlay", ["fr"] = "Masquer le widget" },
+
         // ── Tray ────────────────────────────────────────────────
         ["Show\tCtrl+Alt+M"] = new() { ["en"] = "Show\tCtrl+Alt+M", ["fr"] = "Afficher\tCtrl+Alt+M", ["pl"] = "Pokaż\tCtrl+Alt+M" },
     };
