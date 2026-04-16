@@ -19,6 +19,7 @@ ShowLanguageDialog=yes
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "french"; MessagesFile: "compiler:Languages\French.isl"
+Name: "polish"; MessagesFile: "compiler:Languages\Polish.isl"
 
 [Files]
 Source: "Audiomatic\bin\Release\net10.0-windows10.0.19041.0\win-x64\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -38,3 +39,4 @@ Filename: "{app}\Audiomatic.exe"; Description: "{cm:LaunchProgram,Audiomatic}"; 
 [CustomMessages]
 english.AutoStartProgram=Start %1 with Windows
 french.AutoStartProgram=Lancer %1 au démarrage de Windows
+polish.AutoStartProgram=Uruchamiaj %1 wraz z systemem Windows

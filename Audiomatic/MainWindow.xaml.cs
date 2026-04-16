@@ -4763,17 +4763,11 @@ public sealed partial class MainWindow : Window
             panel.Children.Add(sleepBtn);
         }
 
-        // About — navigate to sub-panel
-        {
-            var aboutBtn = ActionPanel.CreateNavigateButton(Strings.T("About"), () =>
-            {
-                ShowAboutPanel(flyout, anchor);
-            });
-            allButtons.Add(aboutBtn);
-            panel.Children.Add(aboutBtn);
-        }
+        AddLanguageOption("en", Strings.T("English"));
+        AddLanguageOption("fr", Strings.T("French"));
+		AddLanguageOption("pl", Strings.T("Polish"));
 
-        panel.Children.Add(ActionPanel.CreateSeparator());
+		panel.Children.Add(ActionPanel.CreateSeparator());
 
         // ── Destructive ──────────────────────────────────────────
         panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Reset Library"), [], () =>
