@@ -4676,7 +4676,7 @@ public sealed partial class MainWindow : Window
 
         // ── Language cascade ─────────────────────────────────────
         var currentLang = SettingsManager.LoadLanguage();
-        var langs = new[] { ("en", Strings.T("English")), ("fr", Strings.T("French")) };
+        var langs = new[] { ("en", Strings.T("English")), ("fr", Strings.T("French")), ("pl", Strings.T("Polish")) };
         var langBtn = ActionPanel.CreateCascadeButton(Strings.T("Language"), FindLabel(langs, currentLang),
             ActionPanel.CreateRadioSubMenu(langs, currentLang, k => { SettingsManager.SaveLanguage(k); flyout.Hide(); ApplyLocalization(); }));
         allButtons.Add(langBtn);
@@ -4763,11 +4763,7 @@ public sealed partial class MainWindow : Window
             panel.Children.Add(sleepBtn);
         }
 
-        AddLanguageOption("en", Strings.T("English"));
-        AddLanguageOption("fr", Strings.T("French"));
-		AddLanguageOption("pl", Strings.T("Polish"));
-
-		panel.Children.Add(ActionPanel.CreateSeparator());
+        panel.Children.Add(ActionPanel.CreateSeparator());
 
         // ── Destructive ──────────────────────────────────────────
         panel.Children.Add(ActionPanel.CreateButton("\uE74D", Strings.T("Reset Library"), [], () =>
@@ -6229,7 +6225,7 @@ public sealed partial class MainWindow : Window
 
         identity.Children.Add(new TextBlock
         {
-            Text = "Version 0.2.0",
+            Text = "Version 0.2.1",
             FontSize = 12,
             Opacity = 0.45,
             HorizontalAlignment = HorizontalAlignment.Center
