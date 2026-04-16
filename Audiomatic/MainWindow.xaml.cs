@@ -4676,7 +4676,7 @@ public sealed partial class MainWindow : Window
 
         // ── Language cascade ─────────────────────────────────────
         var currentLang = SettingsManager.LoadLanguage();
-        var langs = new[] { ("en", Strings.T("English")), ("fr", Strings.T("French")) };
+        var langs = new[] { ("en", Strings.T("English")), ("fr", Strings.T("French")), ("pl", Strings.T("Polish")) };
         var langBtn = ActionPanel.CreateCascadeButton(Strings.T("Language"), FindLabel(langs, currentLang),
             ActionPanel.CreateRadioSubMenu(langs, currentLang, k => { SettingsManager.SaveLanguage(k); flyout.Hide(); ApplyLocalization(); }));
         allButtons.Add(langBtn);
@@ -4762,10 +4762,6 @@ public sealed partial class MainWindow : Window
             allButtons.Add(sleepBtn);
             panel.Children.Add(sleepBtn);
         }
-
-        AddLanguageOption("en", Strings.T("English"));
-        AddLanguageOption("fr", Strings.T("French"));
-		AddLanguageOption("pl", Strings.T("Polish"));
 
 		panel.Children.Add(ActionPanel.CreateSeparator());
 
